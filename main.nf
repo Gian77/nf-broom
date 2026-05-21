@@ -29,27 +29,37 @@ def helpMessage() {
       nextflow run main.nf -profile condor --reads <dir> --cp_ref <fa> --mt_ref <fa> [options]
 
     Mandatory arguments:
-      --reads [path]        Directory of input FASTQ (one subdir per sample)
-      --cp_ref [path]       Chloroplast reference FASTA
-      --mt_ref [path]       Mitochondrion reference FASTA
+      --reads [path]                Directory of input FASTQ (one subdir per sample)
+      --cp_ref [path]               Chloroplast reference FASTA
+      --mt_ref [path]               Mitochondrion reference FASTA
 
-    Optional arguments:
-      --nuclear_ref [path]  Nuclear reference FASTA               [default: none]
-      --outdir [path]       Output directory                      [default: results]
-      --genome_size [str]   Estimated nuclear genome size         [default: 720m]
-      --busco_lineage [str] BUSCO lineage dataset                 [default: poales_odb10]
-      --medaka_model [str]  Medaka model                          [default: r1041_e82_400bps_sup_v5.0.0]
-      --run_hapdup [bool]   Run HapDup phasing step               [default: false]
-      --help                Show this message and exit
+    Organelle assembly options:
+      --organelle_assembler [str]   Organelle assembler: 'flye' or 'oatk'           [default: flye]
+      --filter_organelles [bool]    Apply reference-based filter post-assembly      [default: true]
+      --organelle_min_qcov [float]  Min fraction of contig covered by ref alignment [default: 0.5]
+      --organelle_min_ident [float] Min identity (matches / alignment length)       [default: 0.7]
+
+    Nuclear assembly options:
+      --genome_size [str]           Estimated nuclear genome size                   [default: 800m]
+      --nuclear_ref [path]          Nuclear reference FASTA (for scaffolding)       [default: none]
+      --run_hapdup [bool]           Run HapDup phasing step                         [default: false]
+
+    Polishing & QC options:
+      --medaka_model [str]          Medaka model (null = auto-detect from reads)    [default: null]
+      --busco_lineage [str]         BUSCO lineage dataset                           [default: poales_odb10]
+
+    General options:
+      --outdir [path]               Output directory                                [default: results]
+      --help                        Show this message and exit
     ===================================================================
     """.stripIndent()
 }
 
 // ---- Module imports ----
-include { NANOPLOT;           FILTER_READS;       MULTIQC }       from './modules/qc.nf'
+include { NANOPLOT; FILTER_READS; MULTIQC; FILTER_ORGANELLE_CONTIGS }       from './modules/qc.nf'
 include { BUSCO_NUCLEAR }                                          from './modules/qc.nf'
 include { ALIGN_TO_ORGANELLES; SORT_INDEX_BAM; EXTRACT_RAW_READSETS; DEDUP_ORGANELLE_READS; READSET_STATS } from './modules/mapping.nf'
-include { ASSEMBLE_CP;       ASSEMBLE_MT;        ASSEMBLE_NUCLEAR } from './modules/assembly.nf'
+include { ASSEMBLE_CP_FLYE; ASSEMBLE_MT_FLYE; ASSEMBLE_ORGANELLES_OATK; ASSEMBLE_NUCLEAR } from './modules/assembly.nf'
 include { POLISH_MEDAKA; PURGE_DUPS; ALIGN_FOR_HAPDUP; SORT_FOR_HAPDUP; HAPDUP } from './modules/polishing.nf'
 
 // ============================================================
@@ -69,15 +79,17 @@ workflow {
         ║             PLANT GENOME ASSEMBLY PIPELINE           ║
         ║  Chloroplast · Mitochondria · Nuclear separation     ║
         ╚══════════════════════════════════════════════════════╝
-        reads dir     : ${params.reads}
-        cp reference  : ${params.cp_ref}
-        mt reference  : ${params.mt_ref}
-        nuclear ref   : ${params.nuclear_ref ?: '(none — Phase 3)'}
-        output dir    : ${params.outdir}
-        genome size   : ${params.genome_size}
-        busco lineage : ${params.busco_lineage}
-        medaka model  : ${params.medaka_model}
-        run HapDup    : ${params.run_hapdup}
+        reads dir           : ${params.reads}
+        cp reference        : ${params.cp_ref}
+        mt reference        : ${params.mt_ref}
+        nuclear ref         : ${params.nuclear_ref ?: '(none — Phase 3)'}
+        organelle assembler : ${params.organelle_assembler}
+        filter organelles   : ${params.filter_organelles}
+        output dir          : ${params.outdir}
+        genome size         : ${params.genome_size}
+        busco lineage       : ${params.busco_lineage}
+        medaka model        : ${params.medaka_model}
+        run HapDup          : ${params.run_hapdup}
         """.stripIndent()
 
     // ---- Reference channels ----
@@ -116,9 +128,41 @@ workflow {
         .combine(mt_ref_ch)
     READSET_STATS(readset_stats_in)
 
-   // 4. Organelle assemblies (use deduplicated reads)
-    ASSEMBLE_CP(DEDUP_ORGANELLE_READS.out.cp_reads)
-    ASSEMBLE_MT(DEDUP_ORGANELLE_READS.out.mt_reads)
+   // 4. Organelle assemblies — branch on assembler choice
+    if (params.organelle_assembler == "oatk") {
+        // OATK takes all filtered reads (not partitioned) and finds organelles itself
+        ASSEMBLE_ORGANELLES_OATK(FILTER_READS.out.reads)
+        cp_raw_ch = ASSEMBLE_ORGANELLES_OATK.out.cp_assembly
+        mt_raw_ch = ASSEMBLE_ORGANELLES_OATK.out.mt_assembly
+    } else {
+        // Flye on the deduplicated partitioned reads
+        ASSEMBLE_CP_FLYE(DEDUP_ORGANELLE_READS.out.cp_reads)
+        ASSEMBLE_MT_FLYE(DEDUP_ORGANELLE_READS.out.mt_reads)
+        cp_raw_ch = ASSEMBLE_CP_FLYE.out.assembly
+        mt_raw_ch = ASSEMBLE_MT_FLYE.out.assembly
+    }
+
+    // 4b. Reference-based filtering — remove nuclear contamination (NUPTs/NUMTs)
+    if (params.filter_organelles) {
+        cp_filter_in = cp_raw_ch.map { id, fa -> tuple(id, 'chloroplast', fa) }
+                                .combine(cp_ref_ch)
+        mt_filter_in = mt_raw_ch.map { id, fa -> tuple(id, 'mitochondria', fa) }
+                                .combine(mt_ref_ch)
+
+        all_organelle_in = cp_filter_in.mix(mt_filter_in)
+        FILTER_ORGANELLE_CONTIGS(all_organelle_in)
+
+        // Final outputs (filtered)
+        cp_final = FILTER_ORGANELLE_CONTIGS.out.filtered
+            .filter { id, comp, fa -> comp == 'chloroplast' }
+            .map { id, comp, fa -> tuple(id, fa) }
+        mt_final = FILTER_ORGANELLE_CONTIGS.out.filtered
+            .filter { id, comp, fa -> comp == 'mitochondria' }
+            .map { id, comp, fa -> tuple(id, fa) }
+    } else {
+        cp_final = cp_raw_ch
+        mt_final = mt_raw_ch
+    }
 
     // 5. Nuclear assembly (no dedup needed — unmapped reads only appear once)
     ASSEMBLE_NUCLEAR(EXTRACT_RAW_READSETS.out.nuclear_reads)
