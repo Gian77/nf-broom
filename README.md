@@ -1,6 +1,16 @@
-# Sorghum Assembly Pipeline 
+# nf-broom 
+## a nextflow pipeline for plnt genome assembly
 
-ONT-only de novo assembly of sorghum genomes with explicit organelle separation. The name `nf-broom` comes from an older common name for sorhgum i.e. broom, as it was used to make brooms.
+<p align="center">
+  <img src="https://seeyoufarm.com" alt="Visits">
+  <img src="https://shields.io" alt="Total Downloads">
+  <img src="https://shields.io" alt="Latest Release">
+  <img src="https://shields.io" alt="Open Issues">
+</p>
+
+This pipeline is under development. At the moment this is ONT-only de novo assembly 
+developed for sorghum genomes with explicit organelle separation. The name `nf-broom` 
+comes from an older common name for sorhgum i.e. broom, as it was used to make brooms.
 
 ## What nf-broom does (for now)
 
