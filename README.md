@@ -1,16 +1,19 @@
 # nf-broom 
+
+<!-- badges: start -->
+[![Visits](https://seeyoufarm.com)](https://hits.seeyoufarm.com)
+[![Total Downloads](https://shields.io)](https://github.com)
+[![Latest Release](https://shields.io)](https://github.com)
+[![Open Issues](https://shields.io)](https://github.com)
+<!-- badges: end -->
+
 ## a nextflow pipeline for plnt genome assembly
 
-<p align="center">
-  <img src="https://seeyoufarm.com" alt="Visits">
-  <img src="https://shields.io" alt="Total Downloads">
-  <img src="https://shields.io" alt="Latest Release">
-  <img src="https://shields.io" alt="Open Issues">
-</p>
-
-This pipeline is under development. At the moment this is ONT-only de novo assembly 
-developed for sorghum genomes with explicit organelle separation. The name `nf-broom` 
-comes from an older common name for sorhgum i.e. broom, as it was used to make brooms.
+`nf-broom` is a [nextflow](https://www.nextflow.io/) pipeline for plnt genome assembly. 
+This pipeline is currently under development. At the moment this is ONT-only de novo 
+assembly developed for sorghum genomes with explicit organelle separation. The name 
+**nf-broom** comes from an older common name for sorhgum i.e. broom, as it was used to 
+make brooms.
 
 ## What nf-broom does (for now)
 
