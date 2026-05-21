@@ -1,10 +1,10 @@
 # nf-broom 
 
 <!-- badges: start -->
-[![Visits](https://seeyoufarm.com)](https://hits.seeyoufarm.com)
-[![Total Downloads](https://shields.io)](https://github.com)
-[![Latest Release](https://shields.io)](https://github.com)
-[![Open Issues](https://shields.io)](https://github.com)
+[![Visits](https://seeyoufarm.com)](https://github.com)
+[![Latest Release](https://shields.io)](https://github.com/releases)
+[![Total Downloads](https://shields.io)](https://github.com/releases)
+[![Open Issues](https://shields.io)](https://github.com/issues)
 <!-- badges: end -->
 
 ## a nextflow pipeline for plnt genome assembly
