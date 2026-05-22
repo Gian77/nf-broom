@@ -8,16 +8,22 @@ nextflow.enable.dsl = 2
 // ============================================================
 
 // ---- Parameters ----
-params.reads        = "${projectDir}/reads"
-params.cp_ref       = null
-params.mt_ref       = null
-params.nuclear_ref  = null
-params.outdir       = "results"
-params.genome_size  = "720m"
-params.busco_lineage = "poales_odb10"
-params.medaka_model = "r1041_e82_400bps_sup_v5.0.0"
-params.run_hapdup   = false
-params.help = false
+params.reads          = "${projectDir}/reads"
+params.cp_ref         = null
+params.mt_ref         = null
+params.oatkdb_version = "v20230921"
+params.oatkdb_commit  = "75e8db0ac4a7d508a9a518d900876003ceb70737"
+params.oatk_mito_db   = "https://raw.githubusercontent.com/c-zhou/OatkDB/${params.oatkdb_commit}/${params.oatkdb_version}/embryophyta_mito.fam"
+params.oatk_pltd_db   = "https://raw.githubusercontent.com/c-zhou/OatkDB/${params.oatkdb_commit}/${params.oatkdb_version}/embryophyta_pltd.fam"
+params.oatkdb_recipe  = "v1-pressed"
+params.outdir         = "results"
+params.genome_size    = "720m"
+params.busco_lineage  = "poales_odb10"
+params.medaka_model   = "r1041_e82_400bps_sup_v5.0.0"
+params.run_hapdup     = false
+params.help           = false
+
+params.organelle_assembler = "flye"    // "flye" (default) or "oatk"
 
 // ---- Help message ---- (top-level function declaration — this is allowed)
 def helpMessage() {
@@ -56,11 +62,16 @@ def helpMessage() {
 }
 
 // ---- Module imports ----
-include { NANOPLOT; FILTER_READS; MULTIQC; FILTER_ORGANELLE_CONTIGS }       from './modules/qc.nf'
-include { BUSCO_NUCLEAR }                                          from './modules/qc.nf'
-include { ALIGN_TO_ORGANELLES; SORT_INDEX_BAM; EXTRACT_RAW_READSETS; DEDUP_ORGANELLE_READS; READSET_STATS } from './modules/mapping.nf'
-include { ASSEMBLE_CP_FLYE; ASSEMBLE_MT_FLYE; ASSEMBLE_ORGANELLES_OATK; ASSEMBLE_NUCLEAR } from './modules/assembly.nf'
-include { POLISH_MEDAKA; PURGE_DUPS; ALIGN_FOR_HAPDUP; SORT_FOR_HAPDUP; HAPDUP } from './modules/polishing.nf'
+// Imports are grouped by source file (one include per module), and within each
+// group processes are listed in the order they appear in the workflow below.
+// Module order itself follows the pipeline stages: QC → mapping → assembly → polishing.
+
+// QC: read stats, filtering, BUSCO completeness, MultiQC aggregation
+include {NANOPLOT; FILTER_READS; FILTER_ORGANELLE_CONTIGS; BUSCO_NUCLEAR; MULTIQC} from './modules/qc.nf'
+include {FETCH_OATKDB;} from './modules/dbs.nf'
+include {ALIGN_TO_ORGANELLES; SORT_INDEX_BAM; EXTRACT_RAW_READSETS; DEDUP_ORGANELLE_READS; READSET_STATS} from './modules/mapping.nf'
+include {ASSEMBLE_CP_FLYE; ASSEMBLE_MT_FLYE; ASSEMBLE_ORGANELLES_OATK; ASSEMBLE_NUCLEAR} from './modules/assembly.nf'
+include {POLISH_MEDAKA; PURGE_DUPS; ALIGN_FOR_HAPDUP; SORT_FOR_HAPDUP; HAPDUP} from './modules/polishing.nf'
 
 // ============================================================
 //  Workflow
@@ -83,7 +94,7 @@ workflow {
         cp reference        : ${params.cp_ref}
         mt reference        : ${params.mt_ref}
         nuclear ref         : ${params.nuclear_ref ?: '(none — Phase 3)'}
-        organelle assembler : ${params.organelle_assembler}
+        organelle assembler : ${params.organelle_assembler}${params.organelle_assembler == 'oatk' ? "  (OatkDB ${params.oatkdb_version})" : ''}
         filter organelles   : ${params.filter_organelles}
         output dir          : ${params.outdir}
         genome size         : ${params.genome_size}
@@ -130,12 +141,15 @@ workflow {
 
    // 4. Organelle assemblies — branch on assembler choice
     if (params.organelle_assembler == "oatk") {
-        // OATK takes all filtered reads (not partitioned) and finds organelles itself
-        ASSEMBLE_ORGANELLES_OATK(FILTER_READS.out.reads)
+        FETCH_OATKDB()
+        ASSEMBLE_ORGANELLES_OATK(
+            FILTER_READS.out.reads,
+            FETCH_OATKDB.out.mito,
+            FETCH_OATKDB.out.pltd
+        )
         cp_raw_ch = ASSEMBLE_ORGANELLES_OATK.out.cp_assembly
         mt_raw_ch = ASSEMBLE_ORGANELLES_OATK.out.mt_assembly
     } else {
-        // Flye on the deduplicated partitioned reads
         ASSEMBLE_CP_FLYE(DEDUP_ORGANELLE_READS.out.cp_reads)
         ASSEMBLE_MT_FLYE(DEDUP_ORGANELLE_READS.out.mt_reads)
         cp_raw_ch = ASSEMBLE_CP_FLYE.out.assembly

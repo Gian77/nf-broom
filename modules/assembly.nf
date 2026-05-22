@@ -70,16 +70,17 @@ process ASSEMBLE_ORGANELLES_OATK {
     tag       { sample_id }
     label     'assemble_small'
     publishDir { "${params.outdir}/assembly/oatk/${sample_id}" }, mode: 'copy'
-    container 'quay.io/biocontainers/oatk:1.0--h4d35ad6_1'
-    // Adjust tag after verifying with: quay_tags oatk
+    container 'docker.io/assteindorff/oatk:1.0'
 
     input:
     tuple val(sample_id), path(reads)
+    tuple path(mito_db), path(mito_idx)
+    tuple path(pltd_db), path(pltd_idx)
 
     output:
     tuple val(sample_id), path("${sample_id}_cp_raw.fasta"), emit: cp_assembly
     tuple val(sample_id), path("${sample_id}_mt_raw.fasta"), emit: mt_assembly
-    path  "oatk_${sample_id}/*",                              emit: log
+    path "oatk_${sample_id}/*", emit: log, optional: true
 
     script:
     """
@@ -92,10 +93,10 @@ process ASSEMBLE_ORGANELLES_OATK {
         -k 1001 \\
         -c 30 \\
         -t ${task.cpus} \\
-        -m \$(which embryophyta_mito.fam || echo embryophyta_mito.fam) \\
-        -p \$(which embryophyta_pltd.fam || echo embryophyta_pltd.fam) \\
+        -m ../${mito_db} \\
+        -p ../${pltd_db} \\
         -o ${sample_id} \\
-        ../${reads} || true
+        ../${reads}
 
     cd ..
 

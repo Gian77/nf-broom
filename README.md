@@ -298,6 +298,32 @@ ps -p $(cat nf.pid)
 kill $(cat nf.pid)
 ```
 
+# To clean up an start a complete new session
+
+```
+cd /home/glbrc.org/benucci/nf-broom
+
+# The work directory (cached task outputs — this is the big one)
+rm -rf /home/glbrc.org/benucci/nf-broom/nf-work-test/
+
+# The .nextflow hidden directory (history, cache metadata, session info)
+rm -rf .nextflow/
+
+# The published results from previous runs (you backed this up above)
+rm -rf results_B11077/
+
+# Any leftover log files
+rm -f .nextflow.log* nextflow_report*.html timeline*.html trace*.txt
+```
+
+And to cancel a `tmux` session, after closing it
+
+```
+tmux kill-session -t nf-broom
+tmux ls    # should now say "no server running"
+```
+
+
 # Additional cleanups
 
 ## Check and clean the apptainer cache
