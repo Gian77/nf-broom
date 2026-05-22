@@ -264,13 +264,13 @@ nextflow run main.nf -profile condor \
     --outdir results_test \
     -w nf-work-test \
     -resume
-
-# Detach from tmux (leaves it running):
-#   Press Ctrl-B, then D
-# Now you can close your laptop, log out, whatever.
 ```
 
-Reconnect later from anywhere:
+<div style="padding: 15px; border: 1px solid #007bcc; background-color: #f0f8ff; border-radius: 5px;"> 
+    <strong>More about tmux use:</strong> To Detach from tmux (leaves it running), press <code>Ctrl-B</code>, then <code>D</code>. Now you can close your laptop, log out, whatever. If you want to copy output on the terminal you can press <code>Ctrl + b</code> then release. Press the <code>[</code> key (this enters "copy mode"). Use your <code>Up/Down</code> arrow keys or <code>Page Up/Page Down</code> to scroll through your output. Press <code>q</code> to exit scroll mode and return to typing. 
+</div>
+
+To reconnect later from anywhere:
 ```
 ssh scarcity-ap-1.glbrc.org
 tmux attach -t nf-broom
