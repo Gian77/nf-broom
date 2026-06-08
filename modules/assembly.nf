@@ -7,7 +7,7 @@ process ASSEMBLE_CP_FLYE {
     tag       { sample_id }
     label     'assemble_small'
     publishDir { "${params.outdir}/assembly/chloroplast/${sample_id}/raw" }, mode: 'copy'
-    container 'quay.io/biocontainers/flye:2.9.6--py313h7fbb527_1'
+    container 'quay.io/biocontainers/flye:2.9.4--py310h2b6aa90_0'
 
     input:
     tuple val(sample_id), path(reads)
@@ -39,7 +39,7 @@ process ASSEMBLE_MT_FLYE {
     tag       { sample_id }
     label     'assemble_small'
     publishDir { "${params.outdir}/assembly/mitochondria/${sample_id}/raw" }, mode: 'copy'
-    container 'quay.io/biocontainers/flye:2.9.6--py313h7fbb527_1'
+    container 'quay.io/biocontainers/flye:2.9.4--py310h2b6aa90_0'
 
     input:
     tuple val(sample_id), path(reads)
@@ -87,10 +87,9 @@ process ASSEMBLE_ORGANELLES_OATK {
     mkdir -p oatk_${sample_id}
     cd oatk_${sample_id}
 
-    # OATK takes ALL reads (post-filtering) and detects organelle reads via HMM
-    # Defaults: -k 1001, -c 30 (min coverage) — adjust if needed
+    # -k 501: ONT-appropriate overlap size; 1001 (HiFi default) fragments ONT graphs
     oatk \\
-        -k 1001 \\
+        -k 501 \\
         -c 30 \\
         -t ${task.cpus} \\
         -m ../${mito_db} \\
@@ -117,12 +116,11 @@ process ASSEMBLE_ORGANELLES_OATK {
     """
 }
 
-// Nuclear assembly unchanged
 process ASSEMBLE_NUCLEAR {
     tag       { sample_id }
     label     'assemble_heavy'
     publishDir { "${params.outdir}/assembly/nuclear/${sample_id}" }, mode: 'copy'
-    container 'quay.io/biocontainers/flye:2.9.6--py313h7fbb527_1'
+    container 'quay.io/biocontainers/flye:2.9.4--py310h2b6aa90_0'
 
     input:
     tuple val(sample_id), path(reads)

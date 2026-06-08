@@ -41,6 +41,7 @@ def helpMessage() {
 
     Organelle assembly options:
       --organelle_assembler [str]   Organelle assembler: 'flye' or 'oatk'           [default: flye]
+                                    'oatk' uses the embryophyta OatkDB (v20230921).
       --filter_organelles [bool]    Apply reference-based filter post-assembly      [default: true]
       --organelle_min_qcov [float]  Min fraction of contig covered by ref alignment [default: 0.5]
       --organelle_min_ident [float] Min identity (matches / alignment length)       [default: 0.7]
@@ -68,7 +69,7 @@ def helpMessage() {
 
 // QC: read stats, filtering, BUSCO completeness, MultiQC aggregation
 include {NANOPLOT; FILTER_READS; FILTER_ORGANELLE_CONTIGS; BUSCO_NUCLEAR; MULTIQC} from './modules/qc.nf'
-include {FETCH_OATKDB;} from './modules/dbs.nf'
+include {FETCH_OATKDB} from './modules/dbs.nf'
 include {ALIGN_TO_ORGANELLES; SORT_INDEX_BAM; EXTRACT_RAW_READSETS; DEDUP_ORGANELLE_READS; READSET_STATS} from './modules/mapping.nf'
 include {ASSEMBLE_CP_FLYE; ASSEMBLE_MT_FLYE; ASSEMBLE_ORGANELLES_OATK; ASSEMBLE_NUCLEAR} from './modules/assembly.nf'
 include {POLISH_MEDAKA; PURGE_DUPS; ALIGN_FOR_HAPDUP; SORT_FOR_HAPDUP; HAPDUP} from './modules/polishing.nf'
@@ -141,11 +142,17 @@ workflow {
 
    // 4. Organelle assemblies — branch on assembler choice
     if (params.organelle_assembler == "oatk") {
+        // Always use the pre-built embryophyta OatkDB.
+        // Building custom HMMs from whole-genome FASTAs (hmmbuild on 140-468 kb
+        // sequences) creates profiles too large for HMMER's DP matrix — integer
+        // overflow at scan time. The standard DB covers sorghum organelle genes.
         FETCH_OATKDB()
+        oatk_mito_db = FETCH_OATKDB.out.mito
+        oatk_pltd_db = FETCH_OATKDB.out.pltd
         ASSEMBLE_ORGANELLES_OATK(
             FILTER_READS.out.reads,
-            FETCH_OATKDB.out.mito,
-            FETCH_OATKDB.out.pltd
+            oatk_mito_db,
+            oatk_pltd_db
         )
         cp_raw_ch = ASSEMBLE_ORGANELLES_OATK.out.cp_assembly
         mt_raw_ch = ASSEMBLE_ORGANELLES_OATK.out.mt_assembly

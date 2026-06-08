@@ -1,0 +1,35 @@
+######
+# HTCondor submit file — nf-broom pipeline (Nextflow head process)
+#
+# Per-task resource requests come from nextflow.config labels:
+#   qc / qc_heavy     : 16 CPUs, 128 GB, 12-24h
+#   map               : 24 CPUs, 128 GB, 12h
+#   assemble_small    : 16 CPUs, 128 GB, 6h
+#   assemble_heavy    : 32 CPUs, 448 GB, 120h  (scarcity-1..5,9,11..13,20)
+#   polish            : 24 CPUs, 256 GB, 48h
+#
+# Usage: condor_submit run_pipeline.submit
+######
+
+## Scheduler universe runs on the schedd machine (scarcity-ap-1) so Nextflow
+## can call condor_submit for each task. Vanilla jobs land on compute nodes
+## which cannot reach the schedd — scheduler is the correct universe here.
+universe = scheduler
+
+## The Nextflow head process is a lightweight orchestrator
+request_cpus   = 2
+request_memory = 8GB
+
+## EXECUTABLE
+Executable = /mnt/cephfs/linuxhome/benucci/nf-broom/run_pipeline.sh
+
+## NOTIFICATION
+notification = Never
+
+## OUTPUT LOGS
+output = /mnt/cephfs/linuxhome/benucci/nf-broom/condor_logs/pipeline.stdout.txt
+error  = /mnt/cephfs/linuxhome/benucci/nf-broom/condor_logs/pipeline.stderr.txt
+log    = /mnt/cephfs/linuxhome/benucci/nf-broom/condor_logs/pipeline.condor.log
+
+## SUBMIT
+Queue
