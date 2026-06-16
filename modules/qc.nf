@@ -74,7 +74,8 @@ process BUSCO_NUCLEAR {
 }
 
 process MULTIQC {
-    label     'qc'
+    label         'qc'
+    errorStrategy 'ignore'   // staging timeout on CephFS should not fail the whole run
     publishDir "${params.outdir}/multiqc", mode: 'copy'
     container 'quay.io/biocontainers/multiqc:1.25.1--pyhdfd78af_0'
 
@@ -88,6 +89,81 @@ process MULTIQC {
     script:
     """
     multiqc .
+    """
+}
+
+process QUAST_ORGANELLE {
+    tag       { "${sample_id}_${compartment}" }
+    label     'assemble_small'
+    publishDir { "${params.outdir}/qc/quast/${compartment}/${sample_id}" }, mode: 'copy'
+    container 'quay.io/biocontainers/quast:5.3.0--py39pl5321h746d604_1'
+
+    input:
+    tuple val(sample_id), val(compartment), path(assembly), path(reference)
+
+    output:
+    tuple val(sample_id), val(compartment), path("quast_${sample_id}_${compartment}"),               emit: report
+    tuple val(sample_id), val(compartment), path("quast_${sample_id}_${compartment}/report.tsv"),    emit: mqc
+
+    script:
+    """
+    quast.py \\
+        --reference ${reference} \\
+        --threads ${task.cpus} \\
+        --output-dir quast_${sample_id}_${compartment} \\
+        --labels "${sample_id}_${compartment}" \\
+        --min-contig 100 \\
+        ${assembly}
+    """
+}
+
+process QUAST_NUCLEAR {
+    tag       { sample_id }
+    label     'qc'
+    publishDir { "${params.outdir}/qc/quast/nuclear/${sample_id}" }, mode: 'copy'
+    container 'quay.io/biocontainers/quast:5.3.0--py39pl5321h746d604_1'
+
+    input:
+    tuple val(sample_id), path(assembly)
+
+    output:
+    tuple val(sample_id), path("quast_${sample_id}_nuclear"),              emit: report
+    tuple val(sample_id), path("quast_${sample_id}_nuclear/report.tsv"),   emit: mqc
+
+    script:
+    """
+    quast.py \\
+        --threads ${task.cpus} \\
+        --output-dir quast_${sample_id}_nuclear \\
+        --labels "${sample_id}_nuclear" \\
+        --min-contig 500 \\
+        --large \\
+        ${assembly}
+    """
+}
+
+process BANDAGE_IMAGE {
+    tag           { "${sample_id}_${compartment}" }
+    cpus          1
+    memory        '4 GB'
+    time          '1h'
+    errorStrategy 'ignore'   // visualization only — never fail the pipeline
+    publishDir    { "${params.outdir}/assembly/${compartment}/${sample_id}" }, mode: 'copy'
+    container     'quay.io/biocontainers/bandage:0.9.0--h9948957_0'
+
+    input:
+    tuple val(sample_id), val(compartment), path(gfa)
+
+    output:
+    tuple val(sample_id), val(compartment), path("${sample_id}_${compartment}_graph.png"),      optional: true, emit: image
+    tuple val(sample_id), val(compartment), path("${sample_id}_${compartment}_graph_info.txt"), optional: true, emit: info
+
+    script:
+    """
+    # Qt offscreen rendering — no X display needed on headless cluster nodes
+    export QT_QPA_PLATFORM=offscreen
+    Bandage image ${gfa} ${sample_id}_${compartment}_graph.png --scope entire 2>/dev/null || true
+    Bandage info  ${gfa} > ${sample_id}_${compartment}_graph_info.txt 2>/dev/null || true
     """
 }
 

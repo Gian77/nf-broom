@@ -68,7 +68,7 @@ def helpMessage() {
 // Module order itself follows the pipeline stages: QC → mapping → assembly → polishing.
 
 // QC: read stats, filtering, BUSCO completeness, MultiQC aggregation
-include {NANOPLOT; FILTER_READS; FILTER_ORGANELLE_CONTIGS; BUSCO_NUCLEAR; MULTIQC} from './modules/qc.nf'
+include {NANOPLOT; FILTER_READS; FILTER_ORGANELLE_CONTIGS; BUSCO_NUCLEAR; MULTIQC; BANDAGE_IMAGE; QUAST_ORGANELLE; QUAST_NUCLEAR} from './modules/qc.nf'
 include {FETCH_OATKDB} from './modules/dbs.nf'
 include {ALIGN_TO_ORGANELLES; SORT_INDEX_BAM; EXTRACT_RAW_READSETS; DEDUP_ORGANELLE_READS; READSET_STATS} from './modules/mapping.nf'
 include {ASSEMBLE_CP_FLYE; ASSEMBLE_MT_FLYE; ASSEMBLE_ORGANELLES_OATK; ASSEMBLE_NUCLEAR} from './modules/assembly.nf'
@@ -156,6 +156,15 @@ workflow {
         )
         cp_raw_ch = ASSEMBLE_ORGANELLES_OATK.out.cp_assembly
         mt_raw_ch = ASSEMBLE_ORGANELLES_OATK.out.mt_assembly
+
+        // Visualize assembly graphs with Bandage (published next to filtered assemblies)
+        bandage_in = ASSEMBLE_ORGANELLES_OATK.out.cp_gfa
+            .map { id, gfa -> tuple(id, 'chloroplast', gfa) }
+            .mix(
+                ASSEMBLE_ORGANELLES_OATK.out.mt_gfa
+                    .map { id, gfa -> tuple(id, 'mitochondria', gfa) }
+            )
+        BANDAGE_IMAGE(bandage_in)
     } else {
         ASSEMBLE_CP_FLYE(DEDUP_ORGANELLE_READS.out.cp_reads)
         ASSEMBLE_MT_FLYE(DEDUP_ORGANELLE_READS.out.mt_reads)
@@ -185,6 +194,17 @@ workflow {
         mt_final = mt_raw_ch
     }
 
+    // 4c. QUAST on filtered organelle assemblies (uses cp/mt references)
+    quast_organelle_in = cp_final
+        .map { id, fa -> tuple(id, 'chloroplast', fa) }
+        .combine(cp_ref_ch)
+        .mix(
+            mt_final
+                .map { id, fa -> tuple(id, 'mitochondria', fa) }
+                .combine(mt_ref_ch)
+        )
+    QUAST_ORGANELLE(quast_organelle_in)
+
     // 5. Nuclear assembly (no dedup needed — unmapped reads only appear once)
     ASSEMBLE_NUCLEAR(EXTRACT_RAW_READSETS.out.nuclear_reads)
 
@@ -212,14 +232,19 @@ workflow {
         HAPDUP(SORT_FOR_HAPDUP.out.bam)
     }
 
-    // 9. BUSCO — nuclear only
+    // 9. QUAST — nuclear assembly stats (no reference; --large for 500 Mb genome)
+    QUAST_NUCLEAR(PURGE_DUPS.out.assembly)
+
+    // 9b. BUSCO — nuclear only
     BUSCO_NUCLEAR(PURGE_DUPS.out.assembly)
 
     // 10. MultiQC aggregation
     multiqc_in = Channel.empty()
-        .mix( NANOPLOT.out.report.map      { sample, f -> f } )
-        .mix( READSET_STATS.out.mqc.map    { sample, f -> f } )
-        .mix( BUSCO_NUCLEAR.out.summary.map { sample, f -> f } )
+        .mix( NANOPLOT.out.report.map                        { sample, f -> f } )
+        .mix( READSET_STATS.out.mqc.map                      { sample, f -> f } )
+        .mix( BUSCO_NUCLEAR.out.summary.map                  { sample, f -> f } )
+        .mix( QUAST_ORGANELLE.out.mqc.map                    { sample, comp, f -> f } )
+        .mix( QUAST_NUCLEAR.out.mqc.map                      { sample, f -> f } )
         .collect()
     MULTIQC(multiqc_in)
 

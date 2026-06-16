@@ -78,8 +78,10 @@ process ASSEMBLE_ORGANELLES_OATK {
     tuple path(pltd_db), path(pltd_idx)
 
     output:
-    tuple val(sample_id), path("${sample_id}_cp_raw.fasta"), emit: cp_assembly
-    tuple val(sample_id), path("${sample_id}_mt_raw.fasta"), emit: mt_assembly
+    tuple val(sample_id), path("${sample_id}_cp_raw.fasta"),                                     emit: cp_assembly
+    tuple val(sample_id), path("${sample_id}_mt_raw.fasta"),                                     emit: mt_assembly
+    tuple val(sample_id), path("oatk_${sample_id}/${sample_id}.pltd.gfa"), optional: true,      emit: cp_gfa
+    tuple val(sample_id), path("oatk_${sample_id}/${sample_id}.mito.gfa"), optional: true,      emit: mt_gfa
     path "oatk_${sample_id}/*", emit: log, optional: true
 
     script:
