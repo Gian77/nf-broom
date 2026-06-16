@@ -73,6 +73,8 @@ include {FETCH_OATKDB} from './modules/dbs.nf'
 include {ALIGN_TO_ORGANELLES; SORT_INDEX_BAM; EXTRACT_RAW_READSETS; DEDUP_ORGANELLE_READS; READSET_STATS} from './modules/mapping.nf'
 include {ASSEMBLE_CP_FLYE; ASSEMBLE_MT_FLYE; ASSEMBLE_ORGANELLES_OATK; ASSEMBLE_NUCLEAR} from './modules/assembly.nf'
 include {POLISH_MEDAKA; PURGE_DUPS; ALIGN_FOR_HAPDUP; SORT_FOR_HAPDUP; HAPDUP} from './modules/polishing.nf'
+include {RAGTAG_SCAFFOLD} from './modules/scaffolding.nf'
+include {FINAL_SUMMARY} from './modules/reports.nf'
 
 // ============================================================
 //  Workflow
@@ -94,7 +96,7 @@ workflow {
         reads dir           : ${params.reads}
         cp reference        : ${params.cp_ref}
         mt reference        : ${params.mt_ref}
-        nuclear ref         : ${params.nuclear_ref ?: '(none — Phase 3)'}
+        nuclear ref         : ${params.nuclear_ref ?: '(none — scaffolding off)'}
         organelle assembler : ${params.organelle_assembler}${params.organelle_assembler == 'oatk' ? "  (OatkDB ${params.oatkdb_version})" : ''}
         filter organelles   : ${params.filter_organelles}
         output dir          : ${params.outdir}
@@ -107,6 +109,10 @@ workflow {
     // ---- Reference channels ----
     cp_ref_ch = Channel.value(file(params.cp_ref, checkIfExists: true))
     mt_ref_ch = Channel.value(file(params.mt_ref, checkIfExists: true))
+    // Nuclear reference is optional — only needed for RagTag scaffolding.
+    nuclear_ref_ch = params.nuclear_ref \
+        ? Channel.value(file(params.nuclear_ref, checkIfExists: true))
+        : Channel.empty()
 
     // ---- Sample channel ----
     raw_reads_ch = Channel
@@ -232,21 +238,44 @@ workflow {
         HAPDUP(SORT_FOR_HAPDUP.out.bam)
     }
 
+    // 8b. Chromosome scaffolding with RagTag (correct + scaffold), if a nuclear
+    //     reference is provided. QC then runs on the scaffolded assembly.
+    if (params.nuclear_ref) {
+        RAGTAG_SCAFFOLD(PURGE_DUPS.out.assembly, nuclear_ref_ch)
+        nuclear_final = RAGTAG_SCAFFOLD.out.scaffold
+    } else {
+        nuclear_final = PURGE_DUPS.out.assembly
+    }
+
     // 9. QUAST — nuclear assembly stats (no reference; --large for 500 Mb genome)
-    QUAST_NUCLEAR(PURGE_DUPS.out.assembly)
+    QUAST_NUCLEAR(nuclear_final)
 
     // 9b. BUSCO — nuclear only
-    BUSCO_NUCLEAR(PURGE_DUPS.out.assembly)
+    BUSCO_NUCLEAR(nuclear_final)
 
     // 10. MultiQC aggregation
+    // QUAST reports are staged as their whole output directory (uniquely named
+    // per compartment) rather than the bare report.tsv — three files all named
+    // report.tsv collide when staged flat. MultiQC recurses into each dir.
     multiqc_in = Channel.empty()
         .mix( NANOPLOT.out.report.map                        { sample, f -> f } )
         .mix( READSET_STATS.out.mqc.map                      { sample, f -> f } )
         .mix( BUSCO_NUCLEAR.out.summary.map                  { sample, f -> f } )
-        .mix( QUAST_ORGANELLE.out.mqc.map                    { sample, comp, f -> f } )
-        .mix( QUAST_NUCLEAR.out.mqc.map                      { sample, f -> f } )
+        .mix( QUAST_ORGANELLE.out.report.map                 { sample, comp, d -> d } )
+        .mix( QUAST_NUCLEAR.out.report.map                   { sample, d -> d } )
         .collect()
     MULTIQC(multiqc_in)
+
+    // 11. Human-readable per-sample summary (NanoPlot + QUAST nuclear + BUSCO)
+    nano_stats_ch = NANOPLOT.out.report
+        .map { id, files ->
+            def list = files instanceof List ? files : [files]
+            tuple(id, list.find { it.name == 'NanoStats.txt' })
+        }
+    summary_in = nano_stats_ch
+        .join(QUAST_NUCLEAR.out.report)
+        .join(BUSCO_NUCLEAR.out.summary)
+    FINAL_SUMMARY(summary_in)
 
     // ---- Completion handler ----
     def outdir = params.outdir ?: 'NA'
