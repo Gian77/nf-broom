@@ -18,6 +18,7 @@ nohup "${CONDA_ENV}/bin/nextflow" run "${PROJECT_DIR}/main.nf" \
     --reads B11077_test/ \
     --cp_ref refs/sorghum/sorghum_cp_NC008602.fasta \
     --mt_ref refs/sorghum/sorghum_mt_NC008360.fasta \
+    --nuclear_ref refs/sorghum/Sbicolor_730_v5.0.fa \
     --outdir results_B11077 \
     -w nf-work-test \
     --organelle_assembler oatk \

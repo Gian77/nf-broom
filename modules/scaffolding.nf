@@ -20,6 +20,8 @@ process RAGTAG_SCAFFOLD {
 
     script:
     """
+    mkdir -p ragtag_${sample_id}
+
     # 1. Correction — split contigs that disagree with the reference (chimeras).
     ragtag.py correct ${reference} ${assembly} \\
         -t ${task.cpus} \\

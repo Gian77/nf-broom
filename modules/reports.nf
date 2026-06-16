@@ -8,7 +8,7 @@ process FINAL_SUMMARY {
     tag           { sample_id }
     label         'qc'
     errorStrategy 'ignore'
-    publishDir    { "${params.outdir}/reports/${sample_id}" }, mode: 'copy'
+    publishDir    { "${params.outdir}/reports/${sample_id}" }, mode: 'symlink'
     container     'quay.io/biocontainers/multiqc:1.25.1--pyhdfd78af_0'
 
     input:
@@ -26,9 +26,24 @@ process FINAL_SUMMARY {
     QUAST="${quast_nuclear}/report.tsv"
     BUSCO=\$(ls ${busco_summary} 2>/dev/null | head -1)
 
-    # helper: pull "value" for a leading label from a tab/colon table, else NA
-    nano() { grep -iE "^\$1" "\$NANO" 2>/dev/null | head -1 | awk -F'\\t' '{print \$NF}' | tr -d ',' || echo NA; }
-    quast() { grep -iE "^\$1" "\$QUAST" 2>/dev/null | head -1 | awk -F'\\t' '{print \$NF}' || echo NA; }
+    # NanoPlot: match field name, return last column value
+    nano() { awk -F'\\t' -v k="\$1" 'tolower(\$1) ~ tolower(k) {print \$NF; exit}' "\$NANO" 2>/dev/null || echo NA; }
+
+    # QUAST: exact first-column match → print all values as a markdown row
+    qrow() {
+        awk -F'\\t' -v k="\$1" '
+            NR==1 { ncols=NF }
+            \$1==k { printf "| **%s** |", \$1; for(i=2;i<=ncols;i++) printf " %s |", \$i; print ""; exit }
+        ' "\$QUAST" 2>/dev/null
+    }
+
+    # QUAST header row (Assembly names as bold columns)
+    qheader() {
+        awk -F'\\t' '
+            NR==1 { printf "| Metric |"; for(i=2;i<=NF;i++) printf " **%s** |", \$i; print "";
+                    printf "|---|";       for(i=2;i<=NF;i++) printf "---|";           print "" }
+        ' "\$QUAST" 2>/dev/null
+    }
 
     {
       echo "# Assembly summary — ${sample_id}"
@@ -40,21 +55,22 @@ process FINAL_SUMMARY {
       echo "| Metric | Value |"
       echo "|---|---|"
       echo "| Number of reads | \$(nano 'number.of.reads') |"
-      echo "| Total bases | \$(nano 'number.of.bases') |"
-      echo "| Read N50 | \$(nano 'n50') |"
-      echo "| Median read length | \$(nano 'median.read.length') |"
-      echo "| Mean read quality | \$(nano 'mean.qual') |"
+      echo "| Total bases     | \$(nano 'number.of.bases') |"
+      echo "| Read N50        | \$(nano 'n50') |"
+      echo "| Median length   | \$(nano 'median.read.length') |"
+      echo "| Mean quality    | \$(nano 'mean.qual') |"
       echo
-      echo "## Nuclear assembly (QUAST)"
+      echo "## Nuclear assembly progression (QUAST)"
       echo
-      echo "| Metric | Value |"
-      echo "|---|---|"
-      echo "| Contigs/scaffolds | \$(quast '# contigs\$') |"
-      echo "| Total length | \$(quast 'Total length\$') |"
-      echo "| Largest | \$(quast 'Largest contig') |"
-      echo "| N50 | \$(quast 'N50') |"
-      echo "| GC (%) | \$(quast 'GC') |"
-      echo "| N per 100 kbp | \$(quast \"# N's per 100 kbp\") |"
+      qheader
+      qrow "# contigs"
+      qrow "Total length"
+      qrow "Largest contig"
+      qrow "N50"
+      qrow "GC (%)"
+      qrow "Genome fraction (%)"
+      qrow "# misassemblies"
+      qrow "# N's per 100 kbp"
       echo
       echo "## Completeness (BUSCO — ${params.busco_lineage})"
       echo

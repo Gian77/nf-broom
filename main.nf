@@ -243,12 +243,34 @@ workflow {
     if (params.nuclear_ref) {
         RAGTAG_SCAFFOLD(PURGE_DUPS.out.assembly, nuclear_ref_ch)
         nuclear_final = RAGTAG_SCAFFOLD.out.scaffold
+
+        // Multi-assembly comparison: all four nuclear versions
+        quast_nuclear_in = ASSEMBLE_NUCLEAR.out.assembly
+            .join(POLISH_MEDAKA.out.assembly)
+            .join(PURGE_DUPS.out.assembly)
+            .join(RAGTAG_SCAFFOLD.out.scaffold)
+            .map { id, flye, medaka, purge, scaffold ->
+                tuple(id,
+                      [flye, medaka, purge, scaffold],
+                      ['flye', 'medaka', 'purge_dups', 'scaffold'])
+            }
     } else {
         nuclear_final = PURGE_DUPS.out.assembly
+
+        // Three-way comparison when no scaffolding step
+        quast_nuclear_in = ASSEMBLE_NUCLEAR.out.assembly
+            .join(POLISH_MEDAKA.out.assembly)
+            .join(PURGE_DUPS.out.assembly)
+            .map { id, flye, medaka, purge ->
+                tuple(id,
+                      [flye, medaka, purge],
+                      ['flye', 'medaka', 'purge_dups'])
+            }
     }
 
-    // 9. QUAST — nuclear assembly stats (no reference; --large for 500 Mb genome)
-    QUAST_NUCLEAR(nuclear_final)
+    // 9. QUAST — side-by-side nuclear assembly progression (--large for 500 Mb genome)
+    quast_nuc_ref_ch = params.nuclear_ref ? nuclear_ref_ch : Channel.value([])
+    QUAST_NUCLEAR(quast_nuclear_in, quast_nuc_ref_ch)
 
     // 9b. BUSCO — nuclear only
     BUSCO_NUCLEAR(nuclear_final)

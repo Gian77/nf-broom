@@ -76,7 +76,7 @@ process BUSCO_NUCLEAR {
 process MULTIQC {
     label         'qc'
     errorStrategy 'ignore'   // staging timeout on CephFS should not fail the whole run
-    publishDir "${params.outdir}/multiqc", mode: 'copy'
+    publishDir "${params.outdir}/multiqc", mode: 'symlink'
     container 'quay.io/biocontainers/multiqc:1.25.1--pyhdfd78af_0'
 
     input:
@@ -124,21 +124,25 @@ process QUAST_NUCLEAR {
     container 'quay.io/biocontainers/quast:5.3.0--py39pl5321h746d604_1'
 
     input:
-    tuple val(sample_id), path(assembly)
+    tuple val(sample_id), path(assemblies), val(asm_labels)
+    path reference   // pass [] when no nuclear_ref provided
 
     output:
     tuple val(sample_id), path("quast_${sample_id}_nuclear"),              emit: report
     tuple val(sample_id), path("quast_${sample_id}_nuclear/report.tsv"),   emit: mqc
 
     script:
+    def ref_arg   = reference    ? "--reference ${reference}" : ""
+    def label_str = asm_labels.join(',')
     """
     quast.py \\
+        ${ref_arg} \\
         --threads ${task.cpus} \\
         --output-dir quast_${sample_id}_nuclear \\
-        --labels "${sample_id}_nuclear" \\
+        --labels "${label_str}" \\
         --min-contig 500 \\
         --large \\
-        ${assembly}
+        ${assemblies}
     """
 }
 
