@@ -111,9 +111,9 @@ process QUAST_ORGANELLE {
         --reference ${reference} \\
         --threads ${task.cpus} \\
         --output-dir quast_${sample_id}_${compartment} \\
-        --labels "${sample_id}_${compartment}" \\
+        --labels "${sample_id}_${compartment},reference" \\
         --min-contig 100 \\
-        ${assembly}
+        ${assembly} ${reference}
     """
 }
 
@@ -124,16 +124,30 @@ process QUAST_NUCLEAR {
     container 'quay.io/biocontainers/quast:5.3.0--py39pl5321h746d604_1'
 
     input:
-    tuple val(sample_id), path(assemblies), val(asm_labels)
-    path reference   // pass [] when no nuclear_ref provided
+    // Four named assembly paths avoid the list-of-paths staging ambiguity.
+    // When no scaffold exists, asm_scaffold receives purge_dups again and is excluded
+    // from the QUAST command via has_scaffold=false.
+    tuple val(sample_id),
+          path(asm_flye,     stageAs: 'asm_flye.fasta'),
+          path(asm_medaka,   stageAs: 'asm_medaka.fasta'),
+          path(asm_purge,    stageAs: 'asm_purge.fasta'),
+          path(asm_scaffold, stageAs: 'asm_scaffold.fasta')
+    val  has_scaffold   // true → include scaffold + reference as 5th assembly
+    path reference      // pass [] when no nuclear_ref
+    val  skip_purge     // true → purge column is medaka passthrough; adjust label
 
     output:
     tuple val(sample_id), path("quast_${sample_id}_nuclear"),              emit: report
     tuple val(sample_id), path("quast_${sample_id}_nuclear/report.tsv"),   emit: mqc
 
     script:
-    def ref_arg   = reference    ? "--reference ${reference}" : ""
-    def label_str = asm_labels.join(',')
+    def ref_arg     = reference    ? "--reference ${reference}" : ""
+    def ref_asm     = reference    ? " ${reference}" : ""
+    def purge_label = skip_purge   ? "medaka_nopurge" : "purge_dups"
+    def label_str   = has_scaffold ? "flye,medaka,${purge_label},scaffold,reference"
+                                   : "flye,medaka,${purge_label}"
+    def asm_str     = has_scaffold ? "asm_flye.fasta asm_medaka.fasta asm_purge.fasta asm_scaffold.fasta"
+                                   : "asm_flye.fasta asm_medaka.fasta asm_purge.fasta"
     """
     quast.py \\
         ${ref_arg} \\
@@ -142,7 +156,7 @@ process QUAST_NUCLEAR {
         --labels "${label_str}" \\
         --min-contig 500 \\
         --large \\
-        ${assemblies}
+        ${asm_str}${ref_asm}
     """
 }
 
@@ -168,6 +182,85 @@ process BANDAGE_IMAGE {
     export QT_QPA_PLATFORM=offscreen
     Bandage image ${gfa} ${sample_id}_${compartment}_graph.png --scope entire 2>/dev/null || true
     Bandage info  ${gfa} > ${sample_id}_${compartment}_graph_info.txt 2>/dev/null || true
+    """
+}
+
+process ALIGN_FOR_QC {
+    tag       { "${sample_id}_${stage}" }
+    label     'map'
+    container 'quay.io/biocontainers/minimap2:2.31--h118bc1c_0'
+
+    input:
+    tuple val(sample_id), val(stage), path(assembly), path(reads)
+
+    output:
+    tuple val(sample_id), val(stage), path(assembly), path("${sample_id}_${stage}.sam"), emit: sam
+
+    script:
+    """
+    minimap2 -t ${task.cpus} -ax map-ont ${assembly} ${reads} > ${sample_id}_${stage}.sam
+    """
+}
+
+process SORT_FOR_QC {
+    tag       { "${sample_id}_${stage}" }
+    label     'map'
+    publishDir { "${params.outdir}/qc/alignments/${sample_id}" }, mode: 'symlink'
+    container 'quay.io/biocontainers/samtools:1.6--h5fe306e_13'
+
+    input:
+    tuple val(sample_id), val(stage), path(assembly), path(sam)
+
+    output:
+    tuple val(sample_id), val(stage), path(assembly), path("${sample_id}_${stage}.bam"), path("${sample_id}_${stage}.bam.bai"), emit: bam
+
+    script:
+    """
+    samtools sort -@ ${task.cpus} -o ${sample_id}_${stage}.bam ${sam}
+    samtools index ${sample_id}_${stage}.bam
+    """
+}
+
+process QUALIMAP_BAMQC {
+    tag       { "${sample_id}_${stage}" }
+    label     'qc'
+    publishDir { "${params.outdir}/qc/qualimap/${sample_id}" }, mode: 'copy'
+    container 'quay.io/biocontainers/qualimap:2.3--hdfd78af_0'
+
+    input:
+    tuple val(sample_id), val(stage), path(assembly), path(bam), path(bai)
+
+    output:
+    tuple val(sample_id), val(stage), path("qualimap_${sample_id}_${stage}"), emit: report
+
+    script:
+    """
+    qualimap bamqc \\
+        -bam ${bam} \\
+        -outdir qualimap_${sample_id}_${stage} \\
+        -nt ${task.cpus} \\
+        --java-mem-size=32G
+    """
+}
+
+process BLOBTOOLS_COVERAGE {
+    tag           { "${sample_id}_${stage}" }
+    label         'qc'
+    errorStrategy 'ignore'
+    publishDir    { "${params.outdir}/qc/blobtools/${sample_id}" }, mode: 'copy'
+    container     'quay.io/biocontainers/blobtools:1.1.1--py_1'
+
+    input:
+    tuple val(sample_id), val(stage), path(assembly), path(bam), path(bai)
+
+    output:
+    path "blobdb_${sample_id}_${stage}*", emit: results
+
+    script:
+    """
+    blobtools create -i ${assembly} -b ${bam} -o blobdb_${sample_id}_${stage}
+    blobtools plot   -i blobdb_${sample_id}_${stage}.blobDB.json --out .
+    blobtools table  -i blobdb_${sample_id}_${stage}.blobDB.json --out .
     """
 }
 

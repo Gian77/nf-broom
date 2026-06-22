@@ -68,13 +68,13 @@ def helpMessage() {
 // Module order itself follows the pipeline stages: QC → mapping → assembly → polishing.
 
 // QC: read stats, filtering, BUSCO completeness, MultiQC aggregation
-include {NANOPLOT; FILTER_READS; FILTER_ORGANELLE_CONTIGS; BUSCO_NUCLEAR; MULTIQC; BANDAGE_IMAGE; QUAST_ORGANELLE; QUAST_NUCLEAR} from './modules/qc.nf'
+include {NANOPLOT; FILTER_READS; FILTER_ORGANELLE_CONTIGS; BUSCO_NUCLEAR; MULTIQC; BANDAGE_IMAGE; QUAST_ORGANELLE; QUAST_NUCLEAR; ALIGN_FOR_QC; SORT_FOR_QC; QUALIMAP_BAMQC; BLOBTOOLS_COVERAGE} from './modules/qc.nf'
 include {FETCH_OATKDB} from './modules/dbs.nf'
 include {ALIGN_TO_ORGANELLES; SORT_INDEX_BAM; EXTRACT_RAW_READSETS; DEDUP_ORGANELLE_READS; READSET_STATS} from './modules/mapping.nf'
 include {ASSEMBLE_CP_FLYE; ASSEMBLE_MT_FLYE; ASSEMBLE_ORGANELLES_OATK; ASSEMBLE_NUCLEAR} from './modules/assembly.nf'
-include {POLISH_MEDAKA; PURGE_DUPS; ALIGN_FOR_HAPDUP; SORT_FOR_HAPDUP; HAPDUP} from './modules/polishing.nf'
+include {POLISH_MEDAKA; PURGE_DUPS; SKIP_PURGE_MARKER; ALIGN_FOR_HAPDUP; SORT_FOR_HAPDUP; HAPDUP} from './modules/polishing.nf'
 include {RAGTAG_SCAFFOLD} from './modules/scaffolding.nf'
-include {FINAL_SUMMARY} from './modules/reports.nf'
+include {FINAL_SUMMARY; TOOLS_REPORT} from './modules/reports.nf'
 
 // ============================================================
 //  Workflow
@@ -104,6 +104,7 @@ workflow {
         busco lineage       : ${params.busco_lineage}
         medaka model        : ${params.medaka_model}
         run HapDup          : ${params.run_hapdup}
+        skip purge_dups     : ${params.skip_purge}
         """.stripIndent()
 
     // ---- Reference channels ----
@@ -219,15 +220,25 @@ workflow {
         .join(EXTRACT_RAW_READSETS.out.nuclear_reads)
     POLISH_MEDAKA(polish_in)
 
-    // 7. Purge haplotigs
-    purge_in = POLISH_MEDAKA.out.assembly
-        .join(EXTRACT_RAW_READSETS.out.nuclear_reads)
-    PURGE_DUPS(purge_in)
+    // 7. Purge haplotigs (or bypass with --skip_purge to go medaka → scaffold directly)
+    if (params.skip_purge) {
+        purge_final      = POLISH_MEDAKA.out.assembly
+        SKIP_PURGE_MARKER(POLISH_MEDAKA.out.assembly)
+        purge_cutoffs_ch = SKIP_PURGE_MARKER.out.cutoffs
+        purge_calcuts_ch = SKIP_PURGE_MARKER.out.calcuts_log
+    } else {
+        purge_in = POLISH_MEDAKA.out.assembly
+            .join(EXTRACT_RAW_READSETS.out.nuclear_reads)
+        PURGE_DUPS(purge_in)
+        purge_final      = PURGE_DUPS.out.assembly
+        purge_cutoffs_ch = PURGE_DUPS.out.cutoffs
+        purge_calcuts_ch = PURGE_DUPS.out.calcuts_log
+    }
 
     // 8. Optional: HapDup phasing
     if (params.run_hapdup) {
-        // Align reads to purged assembly
-        align_in = PURGE_DUPS.out.assembly
+        // Align reads to purge-stage assembly
+        align_in = purge_final
             .join(EXTRACT_RAW_READSETS.out.nuclear_reads)
         ALIGN_FOR_HAPDUP(align_in)
 
@@ -241,39 +252,54 @@ workflow {
     // 8b. Chromosome scaffolding with RagTag (correct + scaffold), if a nuclear
     //     reference is provided. QC then runs on the scaffolded assembly.
     if (params.nuclear_ref) {
-        RAGTAG_SCAFFOLD(PURGE_DUPS.out.assembly, nuclear_ref_ch)
+        RAGTAG_SCAFFOLD(purge_final, nuclear_ref_ch)
         nuclear_final = RAGTAG_SCAFFOLD.out.scaffold
 
-        // Multi-assembly comparison: all four nuclear versions
+        // All four assembly stages + reference for direct comparison
         quast_nuclear_in = ASSEMBLE_NUCLEAR.out.assembly
             .join(POLISH_MEDAKA.out.assembly)
-            .join(PURGE_DUPS.out.assembly)
+            .join(purge_final)
             .join(RAGTAG_SCAFFOLD.out.scaffold)
             .map { id, flye, medaka, purge, scaffold ->
-                tuple(id,
-                      [flye, medaka, purge, scaffold],
-                      ['flye', 'medaka', 'purge_dups', 'scaffold'])
+                tuple(id, flye, medaka, purge, scaffold)
             }
+        QUAST_NUCLEAR(quast_nuclear_in, Channel.value(true), nuclear_ref_ch, Channel.value(params.skip_purge))
     } else {
-        nuclear_final = PURGE_DUPS.out.assembly
+        nuclear_final = purge_final
 
-        // Three-way comparison when no scaffolding step
+        // Three stages without scaffold or reference
         quast_nuclear_in = ASSEMBLE_NUCLEAR.out.assembly
             .join(POLISH_MEDAKA.out.assembly)
-            .join(PURGE_DUPS.out.assembly)
+            .join(purge_final)
             .map { id, flye, medaka, purge ->
-                tuple(id,
-                      [flye, medaka, purge],
-                      ['flye', 'medaka', 'purge_dups'])
+                tuple(id, flye, medaka, purge, purge)  // asm_scaffold unused when has_scaffold=false
             }
+        QUAST_NUCLEAR(quast_nuclear_in, Channel.value(false), Channel.value([]), Channel.value(params.skip_purge))
     }
-
-    // 9. QUAST — side-by-side nuclear assembly progression (--large for 500 Mb genome)
-    quast_nuc_ref_ch = params.nuclear_ref ? nuclear_ref_ch : Channel.value([])
-    QUAST_NUCLEAR(quast_nuclear_in, quast_nuc_ref_ch)
 
     // 9b. BUSCO — nuclear only
     BUSCO_NUCLEAR(nuclear_final)
+
+    // 9c. Optional: BAM-level QC (Qualimap) and coverage blob plots (BlobTools)
+    //     One sorted BAM per assembly stage is computed once and shared between both tools.
+    if (params.run_qualimap || params.run_blobtools) {
+        qc_stages = purge_final
+            .map { sid, fa -> tuple(sid, "purge", fa) }
+
+        if (params.nuclear_ref) {
+            qc_stages = qc_stages.mix(
+                RAGTAG_SCAFFOLD.out.scaffold
+                    .map { sid, fa -> tuple(sid, "scaffold", fa) }
+            )
+        }
+
+        qc_align_in = qc_stages.combine(EXTRACT_RAW_READSETS.out.nuclear_reads, by: 0)
+        ALIGN_FOR_QC(qc_align_in)
+        SORT_FOR_QC(ALIGN_FOR_QC.out.sam)
+
+        if (params.run_qualimap)  QUALIMAP_BAMQC(SORT_FOR_QC.out.bam)
+        if (params.run_blobtools) BLOBTOOLS_COVERAGE(SORT_FOR_QC.out.bam)
+    }
 
     // 10. MultiQC aggregation
     // QUAST reports are staged as their whole output directory (uniquely named
@@ -285,10 +311,21 @@ workflow {
         .mix( BUSCO_NUCLEAR.out.summary.map                  { sample, f -> f } )
         .mix( QUAST_ORGANELLE.out.report.map                 { sample, comp, d -> d } )
         .mix( QUAST_NUCLEAR.out.report.map                   { sample, d -> d } )
-        .collect()
-    MULTIQC(multiqc_in)
+    if (!params.skip_purge) {
+        multiqc_in = multiqc_in
+            .mix( PURGE_DUPS.out.pbstat.map  { sample, f -> f } )
+            .mix( PURGE_DUPS.out.cutoffs.map { sample, f -> f } )
+    }
 
-    // 11. Human-readable per-sample summary (NanoPlot + QUAST nuclear + BUSCO)
+    if (params.run_qualimap) {
+        multiqc_in = multiqc_in.mix(
+            QUALIMAP_BAMQC.out.report.map { sid, stage, d -> d }
+        )
+    }
+
+    MULTIQC(multiqc_in.collect())
+
+    // 11. Human-readable per-sample summary
     nano_stats_ch = NANOPLOT.out.report
         .map { id, files ->
             def list = files instanceof List ? files : [files]
@@ -297,12 +334,13 @@ workflow {
     summary_in = nano_stats_ch
         .join(QUAST_NUCLEAR.out.report)
         .join(BUSCO_NUCLEAR.out.summary)
+        .join(purge_cutoffs_ch)
+        .join(purge_calcuts_ch)
+        .join(RAGTAG_SCAFFOLD.out.stats)
     FINAL_SUMMARY(summary_in)
+    TOOLS_REPORT()
 
-    // ---- Completion handler ----
-    def outdir = params.outdir ?: 'NA'
-    
-    workflow.onComplete = { meta ->
-        log.info "Pipeline completed | Status: ${meta?.successful ? 'SUCCESS' : 'FAILED'} | Duration: ${meta?.duration ?: 'NA'} | Output: ${outdir}"
+    workflow.onComplete {
+        log.info "Pipeline completed | Output: ${params.outdir}"
     }
 }
