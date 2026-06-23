@@ -340,7 +340,10 @@ workflow {
     FINAL_SUMMARY(summary_in)
     TOOLS_REPORT()
 
+    // Capture outdir into a local — `params` resolves to null inside the
+    // onComplete closure when it fires, so reference the captured value.
+    def outdir = params.outdir ?: 'NA'
     workflow.onComplete {
-        log.info "Pipeline completed | Output: ${params.outdir}"
+        log.info "Pipeline completed | Output: ${outdir}"
     }
 }
