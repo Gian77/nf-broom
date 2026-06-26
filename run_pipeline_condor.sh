@@ -1,0 +1,32 @@
+#!/bin/bash
+# Condor-job executable for the nf-broom Nextflow head process.
+# Submitted via pipeline.condor (universe = local) so it runs ON the submit
+# node (scarcity-ap-1) where Nextflow can reach the HTCondor schedd.
+#
+# Unlike run_pipeline.sh, this does NOT use nohup/backgrounding: Condor owns
+# the process lifecycle, so Nextflow must run in the FOREGROUND. If it were
+# backgrounded, Condor would see the wrapper exit and tear the job down,
+# killing the Nextflow head. Stdout/stderr are captured by Condor (see the
+# output/error lines in pipeline.condor).
+set -euo pipefail
+
+export HOME=/mnt/cephfs/linuxhome/benucci
+CONDA_ENV="${HOME}/.conda/envs/nextflow"
+export JAVA_HOME="${CONDA_ENV}"
+export PATH="${CONDA_ENV}/bin:${PATH}"
+
+PROJECT_DIR=/mnt/cephfs/linuxhome/benucci/nf-broom
+cd "${PROJECT_DIR}"
+
+exec "${CONDA_ENV}/bin/nextflow" run "${PROJECT_DIR}/main.nf" \
+    -profile condor \
+    --reads F10702_test/ \
+    --cp_ref refs/sorghum/sorghum_cp_NC008602.fasta \
+    --mt_ref refs/sorghum/sorghum_mt_NC008360.fasta \
+    --nuclear_ref refs/sorghum/Sbicolor_730_v5.0.fa \
+    --outdir results_F10702 \
+    -w nf-work-F10702 \
+    --organelle_assembler oatk \
+    --run_qualimap \
+    --run_blobtools \
+    -resume

@@ -15,13 +15,15 @@ mkdir -p "${LOG_DIR}"
 
 nohup "${CONDA_ENV}/bin/nextflow" run "${PROJECT_DIR}/main.nf" \
     -profile condor \
-    --reads B11077_test/ \
+    --reads F10702_test/ \
     --cp_ref refs/sorghum/sorghum_cp_NC008602.fasta \
     --mt_ref refs/sorghum/sorghum_mt_NC008360.fasta \
     --nuclear_ref refs/sorghum/Sbicolor_730_v5.0.fa \
-    --outdir results_B11077 \
-    -w nf-work-test \
+    --outdir results_F10702 \
+    -w nf-work-F10702 \
     --organelle_assembler oatk \
+    --run_qualimap \
+    --run_blobtools \
     -resume \
     > "${LOG_DIR}/pipeline.stdout.txt" \
     2> "${LOG_DIR}/pipeline.stderr.txt" &

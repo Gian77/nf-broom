@@ -3,6 +3,7 @@
 .nextflow.log*
 .nextflow.history
 nf-work-test/
+nf-work-*/
 work/
 
 # ---- Pipeline outputs ----
@@ -19,4 +20,5 @@ condor_logs/
 reads/
 refs/
 B11077_test/
+*_test/
 tests/**/*.fastq.gz
