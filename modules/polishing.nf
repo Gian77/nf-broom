@@ -39,10 +39,14 @@ process PURGE_DUPS {
     tuple val(sample_id), path(assembly), path(reads)
 
     output:
-    tuple val(sample_id), path("${sample_id}_purged.fasta"), emit: assembly
-    path  "purge_dups_${sample_id}/*",                        emit: log
+    tuple val(sample_id), path("${sample_id}_purged.fasta"),                       emit: assembly
+    tuple val(sample_id), path("purge_dups_${sample_id}/cutoffs"),                 emit: cutoffs
+    tuple val(sample_id), path("purge_dups_${sample_id}/calcuts.log"),             emit: calcuts_log
+    tuple val(sample_id), path("purge_dups_${sample_id}/${sample_id}.PB.stat"),    emit: pbstat
+    path  "purge_dups_${sample_id}/*",                                              emit: log
 
     script:
+    def calcuts_extra = params.calcuts_args ?: ""
     """
     mkdir -p purge_dups_${sample_id}
     cd purge_dups_${sample_id}
@@ -51,7 +55,22 @@ process PURGE_DUPS {
     minimap2 -t ${task.cpus} -xmap-ont ../${assembly} ../${reads} \\
         | gzip -c > reads.paf.gz
     pbcstat reads.paf.gz
-    calcuts PB.stat > cutoffs 2> calcuts.log
+    cp PB.stat ${sample_id}.PB.stat
+
+    # Set calcuts thresholds: manual args if provided, else autotune from PB.stat mode
+    if [ -n "${calcuts_extra}" ]; then
+        calcuts ${calcuts_extra} PB.stat > cutoffs 2> calcuts.log
+    else
+        PEAK=\$(awk '\$1>=10 {if(\$2>max){max=\$2; peak=\$1}} END{print peak}' PB.stat)
+        JUNK=\$(( PEAK / 4 ))
+        HAP_LOW=\$(( PEAK / 2 ))
+        HAP_HIGH=\$(( PEAK + PEAK / 2 ))
+        DIP_LOW=\$(( HAP_HIGH + 1 ))
+        DIP_HIGH=\$(( PEAK * 3 ))
+        REPEAT=\$(( PEAK * 4 ))
+        printf "%d\t%d\t%d\t%d\t%d\t%d\n" \${JUNK} \${HAP_LOW} \${HAP_HIGH} \${DIP_LOW} \${DIP_HIGH} \${REPEAT} > cutoffs
+        echo "[autotune] Peak: \${PEAK}x  cutoffs: \${JUNK} \${HAP_LOW} \${HAP_HIGH} \${DIP_LOW} \${DIP_HIGH} \${REPEAT}" > calcuts.log
+    fi
 
     # Step 2: self-align contigs to find duplicates
     split_fa ../${assembly} > assembly.split
@@ -67,6 +86,23 @@ process PURGE_DUPS {
     """
 }
 
+
+process SKIP_PURGE_MARKER {
+    tag { sample_id }
+
+    input:
+    tuple val(sample_id), path(assembly)
+
+    output:
+    tuple val(sample_id), path("cutoffs"),     emit: cutoffs
+    tuple val(sample_id), path("calcuts.log"), emit: calcuts_log
+
+    script:
+    """
+    printf "0\\t0\\t0\\t0\\t0\\t0\\n" > cutoffs
+    echo "[skip_purge] Purge_dups skipped (--skip_purge true)" > calcuts.log
+    """
+}
 
 process ALIGN_FOR_HAPDUP {
     tag       { sample_id }

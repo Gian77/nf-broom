@@ -8,16 +8,22 @@ nextflow.enable.dsl = 2
 // ============================================================
 
 // ---- Parameters ----
-params.reads        = "${projectDir}/reads"
-params.cp_ref       = null
-params.mt_ref       = null
-params.nuclear_ref  = null
-params.outdir       = "results"
-params.genome_size  = "720m"
-params.busco_lineage = "poales_odb10"
-params.medaka_model = "r1041_e82_400bps_sup_v5.0.0"
-params.run_hapdup   = false
-params.help = false
+params.reads          = "${projectDir}/reads"
+params.cp_ref         = null
+params.mt_ref         = null
+params.oatkdb_version = "v20230921"
+params.oatkdb_commit  = "75e8db0ac4a7d508a9a518d900876003ceb70737"
+params.oatk_mito_db   = "https://raw.githubusercontent.com/c-zhou/OatkDB/${params.oatkdb_commit}/${params.oatkdb_version}/embryophyta_mito.fam"
+params.oatk_pltd_db   = "https://raw.githubusercontent.com/c-zhou/OatkDB/${params.oatkdb_commit}/${params.oatkdb_version}/embryophyta_pltd.fam"
+params.oatkdb_recipe  = "v1-pressed"
+params.outdir         = "results"
+params.genome_size    = "720m"
+params.busco_lineage  = "poales_odb10"
+params.medaka_model   = "r1041_e82_400bps_sup_v5.0.0"
+params.run_hapdup     = false
+params.help           = false
+
+params.organelle_assembler = "flye"    // "flye" (default) or "oatk"
 
 // ---- Help message ---- (top-level function declaration — this is allowed)
 def helpMessage() {
@@ -35,6 +41,7 @@ def helpMessage() {
 
     Organelle assembly options:
       --organelle_assembler [str]   Organelle assembler: 'flye' or 'oatk'           [default: flye]
+                                    'oatk' uses the embryophyta OatkDB (v20230921).
       --filter_organelles [bool]    Apply reference-based filter post-assembly      [default: true]
       --organelle_min_qcov [float]  Min fraction of contig covered by ref alignment [default: 0.5]
       --organelle_min_ident [float] Min identity (matches / alignment length)       [default: 0.7]
@@ -56,11 +63,18 @@ def helpMessage() {
 }
 
 // ---- Module imports ----
-include { NANOPLOT; FILTER_READS; MULTIQC; FILTER_ORGANELLE_CONTIGS }       from './modules/qc.nf'
-include { BUSCO_NUCLEAR }                                          from './modules/qc.nf'
-include { ALIGN_TO_ORGANELLES; SORT_INDEX_BAM; EXTRACT_RAW_READSETS; DEDUP_ORGANELLE_READS; READSET_STATS } from './modules/mapping.nf'
-include { ASSEMBLE_CP_FLYE; ASSEMBLE_MT_FLYE; ASSEMBLE_ORGANELLES_OATK; ASSEMBLE_NUCLEAR } from './modules/assembly.nf'
-include { POLISH_MEDAKA; PURGE_DUPS; ALIGN_FOR_HAPDUP; SORT_FOR_HAPDUP; HAPDUP } from './modules/polishing.nf'
+// Imports are grouped by source file (one include per module), and within each
+// group processes are listed in the order they appear in the workflow below.
+// Module order itself follows the pipeline stages: QC → mapping → assembly → polishing.
+
+// QC: read stats, filtering, BUSCO completeness, MultiQC aggregation
+include {NANOPLOT; FILTER_READS; FILTER_ORGANELLE_CONTIGS; BUSCO_NUCLEAR; MULTIQC; BANDAGE_IMAGE; QUAST_ORGANELLE; QUAST_NUCLEAR; ALIGN_FOR_QC; SORT_FOR_QC; QUALIMAP_BAMQC; BLOBTOOLS_COVERAGE} from './modules/qc.nf'
+include {FETCH_OATKDB} from './modules/dbs.nf'
+include {ALIGN_TO_ORGANELLES; SORT_INDEX_BAM; EXTRACT_RAW_READSETS; DEDUP_ORGANELLE_READS; READSET_STATS} from './modules/mapping.nf'
+include {ASSEMBLE_CP_FLYE; ASSEMBLE_MT_FLYE; ASSEMBLE_ORGANELLES_OATK; ASSEMBLE_NUCLEAR} from './modules/assembly.nf'
+include {POLISH_MEDAKA; PURGE_DUPS; SKIP_PURGE_MARKER; ALIGN_FOR_HAPDUP; SORT_FOR_HAPDUP; HAPDUP} from './modules/polishing.nf'
+include {RAGTAG_SCAFFOLD} from './modules/scaffolding.nf'
+include {FINAL_SUMMARY; TOOLS_REPORT} from './modules/reports.nf'
 
 // ============================================================
 //  Workflow
@@ -82,19 +96,24 @@ workflow {
         reads dir           : ${params.reads}
         cp reference        : ${params.cp_ref}
         mt reference        : ${params.mt_ref}
-        nuclear ref         : ${params.nuclear_ref ?: '(none — Phase 3)'}
-        organelle assembler : ${params.organelle_assembler}
+        nuclear ref         : ${params.nuclear_ref ?: '(none — scaffolding off)'}
+        organelle assembler : ${params.organelle_assembler}${params.organelle_assembler == 'oatk' ? "  (OatkDB ${params.oatkdb_version})" : ''}
         filter organelles   : ${params.filter_organelles}
         output dir          : ${params.outdir}
         genome size         : ${params.genome_size}
         busco lineage       : ${params.busco_lineage}
         medaka model        : ${params.medaka_model}
         run HapDup          : ${params.run_hapdup}
+        skip purge_dups     : ${params.skip_purge}
         """.stripIndent()
 
     // ---- Reference channels ----
     cp_ref_ch = Channel.value(file(params.cp_ref, checkIfExists: true))
     mt_ref_ch = Channel.value(file(params.mt_ref, checkIfExists: true))
+    // Nuclear reference is optional — only needed for RagTag scaffolding.
+    nuclear_ref_ch = params.nuclear_ref \
+        ? Channel.value(file(params.nuclear_ref, checkIfExists: true))
+        : Channel.empty()
 
     // ---- Sample channel ----
     raw_reads_ch = Channel
@@ -130,12 +149,30 @@ workflow {
 
    // 4. Organelle assemblies — branch on assembler choice
     if (params.organelle_assembler == "oatk") {
-        // OATK takes all filtered reads (not partitioned) and finds organelles itself
-        ASSEMBLE_ORGANELLES_OATK(FILTER_READS.out.reads)
+        // Always use the pre-built embryophyta OatkDB.
+        // Building custom HMMs from whole-genome FASTAs (hmmbuild on 140-468 kb
+        // sequences) creates profiles too large for HMMER's DP matrix — integer
+        // overflow at scan time. The standard DB covers sorghum organelle genes.
+        FETCH_OATKDB()
+        oatk_mito_db = FETCH_OATKDB.out.mito
+        oatk_pltd_db = FETCH_OATKDB.out.pltd
+        ASSEMBLE_ORGANELLES_OATK(
+            FILTER_READS.out.reads,
+            oatk_mito_db,
+            oatk_pltd_db
+        )
         cp_raw_ch = ASSEMBLE_ORGANELLES_OATK.out.cp_assembly
         mt_raw_ch = ASSEMBLE_ORGANELLES_OATK.out.mt_assembly
+
+        // Visualize assembly graphs with Bandage (published next to filtered assemblies)
+        bandage_in = ASSEMBLE_ORGANELLES_OATK.out.cp_gfa
+            .map { id, gfa -> tuple(id, 'chloroplast', gfa) }
+            .mix(
+                ASSEMBLE_ORGANELLES_OATK.out.mt_gfa
+                    .map { id, gfa -> tuple(id, 'mitochondria', gfa) }
+            )
+        BANDAGE_IMAGE(bandage_in)
     } else {
-        // Flye on the deduplicated partitioned reads
         ASSEMBLE_CP_FLYE(DEDUP_ORGANELLE_READS.out.cp_reads)
         ASSEMBLE_MT_FLYE(DEDUP_ORGANELLE_READS.out.mt_reads)
         cp_raw_ch = ASSEMBLE_CP_FLYE.out.assembly
@@ -164,6 +201,17 @@ workflow {
         mt_final = mt_raw_ch
     }
 
+    // 4c. QUAST on filtered organelle assemblies (uses cp/mt references)
+    quast_organelle_in = cp_final
+        .map { id, fa -> tuple(id, 'chloroplast', fa) }
+        .combine(cp_ref_ch)
+        .mix(
+            mt_final
+                .map { id, fa -> tuple(id, 'mitochondria', fa) }
+                .combine(mt_ref_ch)
+        )
+    QUAST_ORGANELLE(quast_organelle_in)
+
     // 5. Nuclear assembly (no dedup needed — unmapped reads only appear once)
     ASSEMBLE_NUCLEAR(EXTRACT_RAW_READSETS.out.nuclear_reads)
 
@@ -172,15 +220,25 @@ workflow {
         .join(EXTRACT_RAW_READSETS.out.nuclear_reads)
     POLISH_MEDAKA(polish_in)
 
-    // 7. Purge haplotigs
-    purge_in = POLISH_MEDAKA.out.assembly
-        .join(EXTRACT_RAW_READSETS.out.nuclear_reads)
-    PURGE_DUPS(purge_in)
+    // 7. Purge haplotigs (or bypass with --skip_purge to go medaka → scaffold directly)
+    if (params.skip_purge) {
+        purge_final      = POLISH_MEDAKA.out.assembly
+        SKIP_PURGE_MARKER(POLISH_MEDAKA.out.assembly)
+        purge_cutoffs_ch = SKIP_PURGE_MARKER.out.cutoffs
+        purge_calcuts_ch = SKIP_PURGE_MARKER.out.calcuts_log
+    } else {
+        purge_in = POLISH_MEDAKA.out.assembly
+            .join(EXTRACT_RAW_READSETS.out.nuclear_reads)
+        PURGE_DUPS(purge_in)
+        purge_final      = PURGE_DUPS.out.assembly
+        purge_cutoffs_ch = PURGE_DUPS.out.cutoffs
+        purge_calcuts_ch = PURGE_DUPS.out.calcuts_log
+    }
 
     // 8. Optional: HapDup phasing
     if (params.run_hapdup) {
-        // Align reads to purged assembly
-        align_in = PURGE_DUPS.out.assembly
+        // Align reads to purge-stage assembly
+        align_in = purge_final
             .join(EXTRACT_RAW_READSETS.out.nuclear_reads)
         ALIGN_FOR_HAPDUP(align_in)
 
@@ -191,21 +249,101 @@ workflow {
         HAPDUP(SORT_FOR_HAPDUP.out.bam)
     }
 
-    // 9. BUSCO — nuclear only
-    BUSCO_NUCLEAR(PURGE_DUPS.out.assembly)
+    // 8b. Chromosome scaffolding with RagTag (correct + scaffold), if a nuclear
+    //     reference is provided. QC then runs on the scaffolded assembly.
+    if (params.nuclear_ref) {
+        RAGTAG_SCAFFOLD(purge_final, nuclear_ref_ch)
+        nuclear_final = RAGTAG_SCAFFOLD.out.scaffold
+
+        // All four assembly stages + reference for direct comparison
+        quast_nuclear_in = ASSEMBLE_NUCLEAR.out.assembly
+            .join(POLISH_MEDAKA.out.assembly)
+            .join(purge_final)
+            .join(RAGTAG_SCAFFOLD.out.scaffold)
+            .map { id, flye, medaka, purge, scaffold ->
+                tuple(id, flye, medaka, purge, scaffold)
+            }
+        QUAST_NUCLEAR(quast_nuclear_in, Channel.value(true), nuclear_ref_ch, Channel.value(params.skip_purge))
+    } else {
+        nuclear_final = purge_final
+
+        // Three stages without scaffold or reference
+        quast_nuclear_in = ASSEMBLE_NUCLEAR.out.assembly
+            .join(POLISH_MEDAKA.out.assembly)
+            .join(purge_final)
+            .map { id, flye, medaka, purge ->
+                tuple(id, flye, medaka, purge, purge)  // asm_scaffold unused when has_scaffold=false
+            }
+        QUAST_NUCLEAR(quast_nuclear_in, Channel.value(false), Channel.value([]), Channel.value(params.skip_purge))
+    }
+
+    // 9b. BUSCO — nuclear only
+    BUSCO_NUCLEAR(nuclear_final)
+
+    // 9c. Optional: BAM-level QC (Qualimap) and coverage blob plots (BlobTools)
+    //     One sorted BAM per assembly stage is computed once and shared between both tools.
+    if (params.run_qualimap || params.run_blobtools) {
+        qc_stages = purge_final
+            .map { sid, fa -> tuple(sid, "purge", fa) }
+
+        if (params.nuclear_ref) {
+            qc_stages = qc_stages.mix(
+                RAGTAG_SCAFFOLD.out.scaffold
+                    .map { sid, fa -> tuple(sid, "scaffold", fa) }
+            )
+        }
+
+        qc_align_in = qc_stages.combine(EXTRACT_RAW_READSETS.out.nuclear_reads, by: 0)
+        ALIGN_FOR_QC(qc_align_in)
+        SORT_FOR_QC(ALIGN_FOR_QC.out.sam)
+
+        if (params.run_qualimap)  QUALIMAP_BAMQC(SORT_FOR_QC.out.bam)
+        if (params.run_blobtools) BLOBTOOLS_COVERAGE(SORT_FOR_QC.out.bam)
+    }
 
     // 10. MultiQC aggregation
+    // QUAST reports are staged as their whole output directory (uniquely named
+    // per compartment) rather than the bare report.tsv — three files all named
+    // report.tsv collide when staged flat. MultiQC recurses into each dir.
     multiqc_in = Channel.empty()
-        .mix( NANOPLOT.out.report.map      { sample, f -> f } )
-        .mix( READSET_STATS.out.mqc.map    { sample, f -> f } )
-        .mix( BUSCO_NUCLEAR.out.summary.map { sample, f -> f } )
-        .collect()
-    MULTIQC(multiqc_in)
+        .mix( NANOPLOT.out.report.map                        { sample, f -> f } )
+        .mix( READSET_STATS.out.mqc.map                      { sample, f -> f } )
+        .mix( BUSCO_NUCLEAR.out.summary.map                  { sample, f -> f } )
+        .mix( QUAST_ORGANELLE.out.report.map                 { sample, comp, d -> d } )
+        .mix( QUAST_NUCLEAR.out.report.map                   { sample, d -> d } )
+    if (!params.skip_purge) {
+        multiqc_in = multiqc_in
+            .mix( PURGE_DUPS.out.pbstat.map  { sample, f -> f } )
+            .mix( PURGE_DUPS.out.cutoffs.map { sample, f -> f } )
+    }
 
-    // ---- Completion handler ----
+    if (params.run_qualimap) {
+        multiqc_in = multiqc_in.mix(
+            QUALIMAP_BAMQC.out.report.map { sid, stage, d -> d }
+        )
+    }
+
+    MULTIQC(multiqc_in.collect())
+
+    // 11. Human-readable per-sample summary
+    nano_stats_ch = NANOPLOT.out.report
+        .map { id, files ->
+            def list = files instanceof List ? files : [files]
+            tuple(id, list.find { it.name == 'NanoStats.txt' })
+        }
+    summary_in = nano_stats_ch
+        .join(QUAST_NUCLEAR.out.report)
+        .join(BUSCO_NUCLEAR.out.summary)
+        .join(purge_cutoffs_ch)
+        .join(purge_calcuts_ch)
+        .join(RAGTAG_SCAFFOLD.out.stats)
+    FINAL_SUMMARY(summary_in)
+    TOOLS_REPORT()
+
+    // Capture outdir into a local — `params` resolves to null inside the
+    // onComplete closure when it fires, so reference the captured value.
     def outdir = params.outdir ?: 'NA'
-    
-    workflow.onComplete = { meta ->
-        log.info "Pipeline completed | Status: ${meta?.successful ? 'SUCCESS' : 'FAILED'} | Duration: ${meta?.duration ?: 'NA'} | Output: ${outdir}"
+    workflow.onComplete {
+        log.info "Pipeline completed | Output: ${outdir}"
     }
 }

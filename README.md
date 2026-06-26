@@ -264,13 +264,13 @@ nextflow run main.nf -profile condor \
     --outdir results_test \
     -w nf-work-test \
     -resume
-
-# Detach from tmux (leaves it running):
-#   Press Ctrl-B, then D
-# Now you can close your laptop, log out, whatever.
 ```
 
-Reconnect later from anywhere:
+<div style="padding: 15px; border: 1px solid #007bcc; background-color: #f0f8ff; border-radius: 5px;"> 
+    <strong>More about tmux use:</strong> To Detach from tmux (leaves it running), press <code>Ctrl-B</code>, then <code>D</code>. Now you can close your laptop, log out, whatever. If you want to copy output on the terminal you can press <code>Ctrl + b</code> then release. Press the <code>[</code> key (this enters "copy mode"). Use your <code>Up/Down</code> arrow keys or <code>Page Up/Page Down</code> to scroll through your output. Press <code>q</code> to exit scroll mode and return to typing. 
+</div>
+
+To reconnect later from anywhere:
 ```
 ssh scarcity-ap-1.glbrc.org
 tmux attach -t nf-broom
@@ -297,6 +297,32 @@ tail -f nf.log
 ps -p $(cat nf.pid)
 kill $(cat nf.pid)
 ```
+
+# To clean up an start a complete new session
+
+```
+cd /home/glbrc.org/benucci/nf-broom
+
+# The work directory (cached task outputs — this is the big one)
+rm -rf /home/glbrc.org/benucci/nf-broom/nf-work-test/
+
+# The .nextflow hidden directory (history, cache metadata, session info)
+rm -rf .nextflow/
+
+# The published results from previous runs (you backed this up above)
+rm -rf results_B11077/
+
+# Any leftover log files
+rm -f .nextflow.log* nextflow_report*.html timeline*.html trace*.txt
+```
+
+And to cancel a `tmux` session, after closing it
+
+```
+tmux kill-session -t nf-broom
+tmux ls    # should now say "no server running"
+```
+
 
 # Additional cleanups
 

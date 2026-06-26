@@ -74,8 +74,9 @@ process BUSCO_NUCLEAR {
 }
 
 process MULTIQC {
-    label     'qc'
-    publishDir "${params.outdir}/multiqc", mode: 'copy'
+    label         'qc'
+    errorStrategy 'ignore'   // staging timeout on CephFS should not fail the whole run
+    publishDir "${params.outdir}/multiqc", mode: 'symlink'
     container 'quay.io/biocontainers/multiqc:1.25.1--pyhdfd78af_0'
 
     input:
@@ -88,6 +89,183 @@ process MULTIQC {
     script:
     """
     multiqc .
+    """
+}
+
+process QUAST_ORGANELLE {
+    tag       { "${sample_id}_${compartment}" }
+    label     'assemble_small'
+    publishDir { "${params.outdir}/qc/quast/${compartment}/${sample_id}" }, mode: 'copy'
+    container 'quay.io/biocontainers/quast:5.3.0--py39pl5321h746d604_1'
+
+    input:
+    tuple val(sample_id), val(compartment), path(assembly), path(reference)
+
+    output:
+    tuple val(sample_id), val(compartment), path("quast_${sample_id}_${compartment}"),               emit: report
+    tuple val(sample_id), val(compartment), path("quast_${sample_id}_${compartment}/report.tsv"),    emit: mqc
+
+    script:
+    """
+    quast.py \\
+        --reference ${reference} \\
+        --threads ${task.cpus} \\
+        --output-dir quast_${sample_id}_${compartment} \\
+        --labels "${sample_id}_${compartment},reference" \\
+        --min-contig 100 \\
+        ${assembly} ${reference}
+    """
+}
+
+process QUAST_NUCLEAR {
+    tag       { sample_id }
+    label     'qc'
+    publishDir { "${params.outdir}/qc/quast/nuclear/${sample_id}" }, mode: 'copy'
+    container 'quay.io/biocontainers/quast:5.3.0--py39pl5321h746d604_1'
+
+    input:
+    // Four named assembly paths avoid the list-of-paths staging ambiguity.
+    // When no scaffold exists, asm_scaffold receives purge_dups again and is excluded
+    // from the QUAST command via has_scaffold=false.
+    tuple val(sample_id),
+          path(asm_flye,     stageAs: 'asm_flye.fasta'),
+          path(asm_medaka,   stageAs: 'asm_medaka.fasta'),
+          path(asm_purge,    stageAs: 'asm_purge.fasta'),
+          path(asm_scaffold, stageAs: 'asm_scaffold.fasta')
+    val  has_scaffold   // true → include scaffold + reference as 5th assembly
+    path reference      // pass [] when no nuclear_ref
+    val  skip_purge     // true → purge column is medaka passthrough; adjust label
+
+    output:
+    tuple val(sample_id), path("quast_${sample_id}_nuclear"),              emit: report
+    tuple val(sample_id), path("quast_${sample_id}_nuclear/report.tsv"),   emit: mqc
+
+    script:
+    def ref_arg     = reference    ? "--reference ${reference}" : ""
+    def ref_asm     = reference    ? " ${reference}" : ""
+    def purge_label = skip_purge   ? "medaka_nopurge" : "purge_dups"
+    def label_str   = has_scaffold ? "flye,medaka,${purge_label},scaffold,reference"
+                                   : "flye,medaka,${purge_label}"
+    def asm_str     = has_scaffold ? "asm_flye.fasta asm_medaka.fasta asm_purge.fasta asm_scaffold.fasta"
+                                   : "asm_flye.fasta asm_medaka.fasta asm_purge.fasta"
+    """
+    quast.py \\
+        ${ref_arg} \\
+        --threads ${task.cpus} \\
+        --output-dir quast_${sample_id}_nuclear \\
+        --labels "${label_str}" \\
+        --min-contig 500 \\
+        --large \\
+        ${asm_str}${ref_asm}
+    """
+}
+
+process BANDAGE_IMAGE {
+    tag           { "${sample_id}_${compartment}" }
+    cpus          1
+    memory        '4 GB'
+    time          '1h'
+    errorStrategy 'ignore'   // visualization only — never fail the pipeline
+    publishDir    { "${params.outdir}/assembly/${compartment}/${sample_id}" }, mode: 'copy'
+    container     'quay.io/biocontainers/bandage:0.9.0--h9948957_0'
+
+    input:
+    tuple val(sample_id), val(compartment), path(gfa)
+
+    output:
+    tuple val(sample_id), val(compartment), path("${sample_id}_${compartment}_graph.png"),      optional: true, emit: image
+    tuple val(sample_id), val(compartment), path("${sample_id}_${compartment}_graph_info.txt"), optional: true, emit: info
+
+    script:
+    """
+    # Qt offscreen rendering — no X display needed on headless cluster nodes
+    export QT_QPA_PLATFORM=offscreen
+    Bandage image ${gfa} ${sample_id}_${compartment}_graph.png --scope entire 2>/dev/null || true
+    Bandage info  ${gfa} > ${sample_id}_${compartment}_graph_info.txt 2>/dev/null || true
+    """
+}
+
+process ALIGN_FOR_QC {
+    tag       { "${sample_id}_${stage}" }
+    label     'map'
+    container 'quay.io/biocontainers/minimap2:2.31--h118bc1c_0'
+
+    input:
+    tuple val(sample_id), val(stage), path(assembly), path(reads)
+
+    output:
+    tuple val(sample_id), val(stage), path(assembly), path("${sample_id}_${stage}.sam"), emit: sam
+
+    script:
+    """
+    minimap2 -t ${task.cpus} -ax map-ont ${assembly} ${reads} > ${sample_id}_${stage}.sam
+    """
+}
+
+process SORT_FOR_QC {
+    tag       { "${sample_id}_${stage}" }
+    label     'map'
+    publishDir { "${params.outdir}/qc/alignments/${sample_id}" }, mode: 'symlink'
+    container 'quay.io/biocontainers/samtools:1.6--h5fe306e_13'
+
+    input:
+    tuple val(sample_id), val(stage), path(assembly), path(sam)
+
+    output:
+    tuple val(sample_id), val(stage), path(assembly), path("${sample_id}_${stage}.bam"), path("${sample_id}_${stage}.bam.bai"), emit: bam
+
+    script:
+    """
+    samtools sort -@ ${task.cpus} -o ${sample_id}_${stage}.bam ${sam}
+    samtools index ${sample_id}_${stage}.bam
+    """
+}
+
+process QUALIMAP_BAMQC {
+    tag       { "${sample_id}_${stage}" }
+    label     'qc'
+    publishDir { "${params.outdir}/qc/qualimap/${sample_id}" }, mode: 'copy'
+    container 'quay.io/biocontainers/qualimap:2.3--hdfd78af_0'
+
+    input:
+    tuple val(sample_id), val(stage), path(assembly), path(bam), path(bai)
+
+    output:
+    tuple val(sample_id), val(stage), path("qualimap_${sample_id}_${stage}"), emit: report
+
+    script:
+    """
+    qualimap bamqc \\
+        -bam ${bam} \\
+        -outdir qualimap_${sample_id}_${stage} \\
+        -nt ${task.cpus} \\
+        --java-mem-size=32G
+    """
+}
+
+process BLOBTOOLS_COVERAGE {
+    tag           { "${sample_id}_${stage}" }
+    label         'qc'
+    errorStrategy 'ignore'
+    publishDir    { "${params.outdir}/qc/blobtools/${sample_id}" }, mode: 'copy'
+    container     'quay.io/biocontainers/blobtools:1.1.1--py_1'
+
+    input:
+    tuple val(sample_id), val(stage), path(assembly), path(bam), path(bai)
+
+    output:
+    path "blobdb_${sample_id}_${stage}*", emit: results
+
+    script:
+    def pfx = "blobdb_${sample_id}_${stage}"
+    """
+    # blobtools v1 requires a nodesDB even in coverage-only mode (no hits file).
+    # Build a minimal 2-node DB so the tool initialises; all contigs will appear as "no-hit".
+    printf "# nodes_count = 2\\n1\\tno rank\\troot\\t1\\n0\\tno rank\\tno-hit\\t1\\n" > nodesDB.txt
+
+    blobtools create -i ${assembly} -b ${bam} -o ${pfx} --db nodesDB.txt
+    blobtools plot   -i ${pfx}.blobDB.json --out ${pfx}
+    blobtools view   -i ${pfx}.blobDB.json -o ${pfx}
     """
 }
 
