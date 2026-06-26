@@ -257,10 +257,15 @@ process BLOBTOOLS_COVERAGE {
     path "blobdb_${sample_id}_${stage}*", emit: results
 
     script:
+    def pfx = "blobdb_${sample_id}_${stage}"
     """
-    blobtools create -i ${assembly} -b ${bam} -o blobdb_${sample_id}_${stage}
-    blobtools plot   -i blobdb_${sample_id}_${stage}.blobDB.json --out .
-    blobtools table  -i blobdb_${sample_id}_${stage}.blobDB.json --out .
+    # blobtools v1 requires a nodesDB even in coverage-only mode (no hits file).
+    # Build a minimal 2-node DB so the tool initialises; all contigs will appear as "no-hit".
+    printf "# nodes_count = 2\\n1\\tno rank\\troot\\t1\\n0\\tno rank\\tno-hit\\t1\\n" > nodesDB.txt
+
+    blobtools create -i ${assembly} -b ${bam} -o ${pfx} --db nodesDB.txt
+    blobtools plot   -i ${pfx}.blobDB.json --out ${pfx}
+    blobtools view   -i ${pfx}.blobDB.json -o ${pfx}
     """
 }
 

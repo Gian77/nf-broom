@@ -104,7 +104,8 @@ process FINAL_SUMMARY {
     BUSCO_M=\$(grep 'M:[0-9]' "\$BUSCO" 2>/dev/null | grep -o 'M:[0-9][0-9.]*' | cut -d: -f2 | head -1 || echo 0)
 
     PEAK=\$(grep "autotune" "\$CALCUTS" 2>/dev/null | grep -o 'Peak: [0-9]*x' | grep -o '[0-9]*' || echo "unknown")
-    SKIP_PURGE=\$(grep -c "skip_purge" "\$CALCUTS" 2>/dev/null || echo 0)
+    SKIP_PURGE=0
+    grep -q "skip_purge" "\$CALCUTS" 2>/dev/null && SKIP_PURGE=1 || true
 
     QUALITY_TIER=\$(awk -v c="\$BUSCO_C" -v gf="\$GFRAC_SCAFFOLD" -v n50="\$N50_SCAFFOLD" 'BEGIN {
         c=c+0; gf=gf+0; n50=n50+0; score=0
@@ -490,6 +491,29 @@ Coverage-only mode (no taxonomy database required) visualises whether all contig
 the expected sequencing depth and GC content. Unexpected clusters may indicate contamination
 or organelle sequence carry-over into the nuclear assembly. Results are published as PNG plots
 and TSV tables in the output directory.
+
+---
+
+## References and links
+
+Citations for each tool, in order of appearance, with project homepages.
+
+- **NanoPlot / NanoPack** -- De Coster W, et al. NanoPack: visualizing and processing long-read sequencing data. Bioinformatics. 2018;34(15):2666-2669. <https://github.com/wdecoster/NanoPlot>
+- **Filtlong** -- Wick RR. Filtlong (no associated publication). <https://github.com/rrwick/Filtlong>
+- **minimap2** -- Li H. Minimap2: pairwise alignment for nucleotide sequences. Bioinformatics. 2018;34(18):3094-3100. <https://github.com/lh3/minimap2>
+- **SAMtools** -- Danecek P, et al. Twelve years of SAMtools and BCFtools. GigaScience. 2021;10(2):giab008. <https://www.htslib.org>
+- **Flye** -- Kolmogorov M, et al. Assembly of long, error-prone reads using repeat graphs. Nat Biotechnol. 2019;37:540-546. <https://github.com/fenderglass/Flye>
+- **OATK** -- Zhou C. Oatk: organelle assembly toolkit (no associated publication). <https://github.com/c-zhou/oatk>
+- **Bandage** -- Wick RR, et al. Bandage: interactive visualization of de novo genome assemblies. Bioinformatics. 2015;31(20):3350-3352. <https://rrwick.github.io/Bandage>
+- **Medaka** -- Oxford Nanopore Technologies. Medaka (no associated publication). <https://github.com/nanoporetech/medaka>
+- **purge_dups** -- Guan D, et al. Identifying and removing haplotypic duplication in primary genome assemblies. Bioinformatics. 2020;36(9):2896-2898. <https://github.com/dfguan/purge_dups>
+- **HapDup** -- Kolmogorov M, et al. Scalable nanopore sequencing of human genomes provides a comprehensive view of haplotype-resolved variation and methylation. Nat Methods. 2023;20:1483-1492. <https://github.com/KolmogorovLab/hapdup>
+- **RagTag** -- Alonge M, et al. Automated assembly scaffolding using RagTag elevates a new tomato system for high-throughput genome editing. Genome Biol. 2022;23:258. <https://github.com/malonge/RagTag>
+- **QUAST** -- Gurevich A, et al. QUAST: quality assessment tool for genome assemblies. Bioinformatics. 2013;29(8):1072-1075. <https://github.com/ablab/quast>
+- **BUSCO** -- Manni M, et al. BUSCO update: novel and streamlined workflows along with broader and deeper phylogenetic coverage. Mol Biol Evol. 2021;38(10):4647-4654. <https://busco.ezlab.org>
+- **MultiQC** -- Ewels P, et al. MultiQC: summarize analysis results for multiple tools and samples in a single report. Bioinformatics. 2016;32(19):3047-3048. <https://multiqc.info>
+- **Qualimap** -- Okonechnikov K, et al. Qualimap 2: advanced multi-sample quality control for high-throughput sequencing data. Bioinformatics. 2016;32(2):292-294. <http://qualimap.conf.es>
+- **BlobTools** -- Laetsch DR, Blaxter ML. BlobTools: Interrogation of genome assemblies. F1000Research. 2017;6:1287. <https://github.com/DRL/blobtools>
 TOOLSEOF
     """
 }
