@@ -12,7 +12,9 @@ process KRAKEN2_CLASSIFY {
     label         'qc_heavy'
     errorStrategy 'ignore'   // advisory screening — never fail the pipeline
     publishDir    { "${params.outdir}/qc/kraken2/${sample_id}" }, mode: 'copy'
-    container     'quay.io/biocontainers/kraken2:2.1.3--pl5321hdcf5f25_0'
+    // NB: the hdcf5f25 builds fail to unpack under unprivileged apptainer ("linuxrc"
+    // hardlink: operation not permitted). The h077b44d base unpacks cleanly.
+    container     'quay.io/biocontainers/kraken2:2.1.3--pl5321h077b44d_4'
 
     input:
     tuple val(sample_id), val(stage), path(assembly), path(bam), path(bai)
