@@ -247,7 +247,7 @@ process FINAL_SUMMARY {
       echo "## 3. Haplotig removal (Purge_dups)"
       echo
       if [ "\$SKIP_PURGE" -gt 0 ]; then
-        echo "> **Note:** Purge_dups was skipped (\`--skip_purge true\`). Assembly proceeded directly from Medaka polishing to scaffolding without haplotig removal. To compare, rerun without this flag."
+        echo '> **Note:** Purge_dups was skipped (`--skip_purge true`). Assembly proceeded directly from Medaka polishing to scaffolding without haplotig removal. To compare, rerun without this flag.'
       else
         echo "Coverage cutoffs (junk / hap-low / hap-high / dip-low / dip-high / repeat):"
         echo
