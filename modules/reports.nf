@@ -170,7 +170,9 @@ process FINAL_SUMMARY {
             }
             mech = "Removed " removed "% of assembled sequence (genome fraction: " sprintf("%.1f",gf_pre) "% -> " sprintf("%.1f",gf_post) "%, drop " sprintf("%.1f",drop) "%). "
             mech = mech "Purging is driven primarily by the self-alignment overlap step: contigs that map redundantly against the primary assembly are classified as haplotigs and discarded; the coverage cutoffs assign each contig to a depth class before overlap testing. "
-            if (ret < 55)
+            if (drop > 15)
+                verdict = "Genome fraction fell " sprintf("%.1f",drop) " points -- purge_dups removed UNIQUE reference sequence, not just haplotigs (over-purging). A true haplotig purge leaves genome fraction roughly flat. Strongly consider --skip_purge (or manual --calcuts_args), especially at low coverage. See the pre-purge comparison below."
+            else if (ret < 55)
                 verdict = "Large removal -- possible over-purging for a homozygous sample. Consider --calcuts_args to set manual cutoffs, or skip purge_dups."
             else if (ret < 75)
                 verdict = "Moderate removal, typical for a heterozygous plant genome where alternate-haplotype contigs are assembled separately at similar depth to the primary contigs."
