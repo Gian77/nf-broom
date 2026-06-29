@@ -74,6 +74,7 @@ include {ALIGN_TO_ORGANELLES; SORT_INDEX_BAM; EXTRACT_RAW_READSETS; DEDUP_ORGANE
 include {ASSEMBLE_CP_FLYE; ASSEMBLE_MT_FLYE; ASSEMBLE_ORGANELLES_OATK; ASSEMBLE_NUCLEAR} from './modules/assembly.nf'
 include {POLISH_MEDAKA; PURGE_DUPS; SKIP_PURGE_MARKER; ALIGN_FOR_HAPDUP; SORT_FOR_HAPDUP; HAPDUP} from './modules/polishing.nf'
 include {RAGTAG_SCAFFOLD; RAGTAG_SCAFFOLD as RAGTAG_PREPURGE} from './modules/scaffolding.nf'
+include {KRAKEN2_CLASSIFY; BLOBTOOLS_TAXONOMY} from './modules/contamination.nf'
 include {FINAL_SUMMARY; TOOLS_REPORT} from './modules/reports.nf'
 
 // ============================================================
@@ -297,7 +298,7 @@ workflow {
 
     // 9c. Optional: BAM-level QC (Qualimap) and coverage blob plots (BlobTools)
     //     One sorted BAM per assembly stage is computed once and shared between both tools.
-    if (params.run_qualimap || params.run_blobtools) {
+    if (params.run_qualimap || params.run_blobtools || params.run_kraken2) {
         qc_stages = purge_final
             .map { sid, fa -> tuple(sid, "purge", fa) }
 
@@ -314,6 +315,15 @@ workflow {
 
         if (params.run_qualimap)  QUALIMAP_BAMQC(SORT_FOR_QC.out.bam)
         if (params.run_blobtools) BLOBTOOLS_COVERAGE(SORT_FOR_QC.out.bam)
+
+        // Contaminant screening: Kraken2 classifies contigs, then BlobTools renders the
+        // blob plot coloured by the resulting taxonomy (non-Viridiplantae = candidate contam).
+        if (params.run_kraken2) {
+            kraken2_db_ch = Channel.value(file(params.kraken2_db,  checkIfExists: true))
+            taxdump_ch    = Channel.value(file(params.taxdump_dir, checkIfExists: true))
+            KRAKEN2_CLASSIFY(SORT_FOR_QC.out.bam, kraken2_db_ch)
+            BLOBTOOLS_TAXONOMY(KRAKEN2_CLASSIFY.out.hits, taxdump_ch)
+        }
     }
 
     // 10. MultiQC aggregation
