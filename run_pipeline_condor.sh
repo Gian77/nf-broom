@@ -18,6 +18,14 @@ export PATH="${CONDA_ENV}/bin:${PATH}"
 PROJECT_DIR=/mnt/cephfs/linuxhome/benucci/nf-broom
 cd "${PROJECT_DIR}"
 
+# Resume from the most recent session by default. Override with RESUME_SESSION to
+# pin a specific session UUID: a plain `nextflow run -preview` (or any extra run)
+# against this work dir starts a NEW session, and bare `-resume` then targets that
+# newer (cache-empty) session, causing a needless full re-run. Pin the good
+# session's UUID (from `.nextflow/history`) to reuse its cache.
+RESUME="-resume"
+[ -n "${RESUME_SESSION:-}" ] && RESUME="-resume ${RESUME_SESSION}"
+
 exec "${CONDA_ENV}/bin/nextflow" run "${PROJECT_DIR}/main.nf" \
     -profile condor \
     --reads F10702_test/ \
@@ -29,4 +37,4 @@ exec "${CONDA_ENV}/bin/nextflow" run "${PROJECT_DIR}/main.nf" \
     --organelle_assembler oatk \
     --run_qualimap \
     --run_blobtools \
-    -resume
+    ${RESUME}
