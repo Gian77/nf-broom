@@ -37,4 +37,5 @@ exec "${CONDA_ENV}/bin/nextflow" run "${PROJECT_DIR}/main.nf" \
     --organelle_assembler oatk \
     --run_qualimap \
     --run_blobtools \
+    --run_kraken2 \
     ${RESUME}
