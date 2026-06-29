@@ -73,7 +73,7 @@ include {FETCH_OATKDB} from './modules/dbs.nf'
 include {ALIGN_TO_ORGANELLES; SORT_INDEX_BAM; EXTRACT_RAW_READSETS; DEDUP_ORGANELLE_READS; READSET_STATS} from './modules/mapping.nf'
 include {ASSEMBLE_CP_FLYE; ASSEMBLE_MT_FLYE; ASSEMBLE_ORGANELLES_OATK; ASSEMBLE_NUCLEAR} from './modules/assembly.nf'
 include {POLISH_MEDAKA; PURGE_DUPS; SKIP_PURGE_MARKER; ALIGN_FOR_HAPDUP; SORT_FOR_HAPDUP; HAPDUP} from './modules/polishing.nf'
-include {RAGTAG_SCAFFOLD} from './modules/scaffolding.nf'
+include {RAGTAG_SCAFFOLD; RAGTAG_SCAFFOLD as RAGTAG_PREPURGE} from './modules/scaffolding.nf'
 include {FINAL_SUMMARY; TOOLS_REPORT} from './modules/reports.nf'
 
 // ============================================================
@@ -252,29 +252,44 @@ workflow {
     // 8b. Chromosome scaffolding with RagTag (correct + scaffold), if a nuclear
     //     reference is provided. QC then runs on the scaffolded assembly.
     if (params.nuclear_ref) {
-        RAGTAG_SCAFFOLD(purge_final, nuclear_ref_ch)
+        // Canonical (purge-stage) scaffold — the pipeline's final nuclear assembly.
+        RAGTAG_SCAFFOLD(purge_final.map { id, fa -> tuple(id, 'purge', fa) }, nuclear_ref_ch)
         nuclear_final = RAGTAG_SCAFFOLD.out.scaffold
 
-        // All four assembly stages + reference for direct comparison
+        // When purge_dups runs, also scaffold the pre-purge (Medaka) assembly so the
+        // QUAST table shows medaka_scaf vs purge scaffold side-by-side. This exposes
+        // over-purging: if purge_dups discards unique sequence, medaka_scaf retains a
+        // much higher genome fraction. Skipped under --skip_purge (no purge to compare).
+        if (!params.skip_purge) {
+            RAGTAG_PREPURGE(POLISH_MEDAKA.out.assembly.map { id, fa -> tuple(id, 'medaka', fa) }, nuclear_ref_ch)
+            medaka_scaffold_ch  = RAGTAG_PREPURGE.out.scaffold
+            has_medaka_scaffold = true
+        } else {
+            medaka_scaffold_ch  = RAGTAG_SCAFFOLD.out.scaffold   // placeholder, excluded via flag
+            has_medaka_scaffold = false
+        }
+
+        // All assembly stages + reference for direct comparison
         quast_nuclear_in = ASSEMBLE_NUCLEAR.out.assembly
             .join(POLISH_MEDAKA.out.assembly)
+            .join(medaka_scaffold_ch)
             .join(purge_final)
             .join(RAGTAG_SCAFFOLD.out.scaffold)
-            .map { id, flye, medaka, purge, scaffold ->
-                tuple(id, flye, medaka, purge, scaffold)
+            .map { id, flye, medaka, mscaf, purge, scaffold ->
+                tuple(id, flye, medaka, mscaf, purge, scaffold)
             }
-        QUAST_NUCLEAR(quast_nuclear_in, Channel.value(true), nuclear_ref_ch, Channel.value(params.skip_purge))
+        QUAST_NUCLEAR(quast_nuclear_in, Channel.value(true), Channel.value(has_medaka_scaffold), nuclear_ref_ch, Channel.value(params.skip_purge))
     } else {
         nuclear_final = purge_final
 
-        // Three stages without scaffold or reference
+        // Three stages without scaffold or reference (medaka_scaf / scaffold are placeholders)
         quast_nuclear_in = ASSEMBLE_NUCLEAR.out.assembly
             .join(POLISH_MEDAKA.out.assembly)
             .join(purge_final)
             .map { id, flye, medaka, purge ->
-                tuple(id, flye, medaka, purge, purge)  // asm_scaffold unused when has_scaffold=false
+                tuple(id, flye, medaka, purge, purge, purge)  // asm_medaka_scaffold + asm_scaffold unused
             }
-        QUAST_NUCLEAR(quast_nuclear_in, Channel.value(false), Channel.value([]), Channel.value(params.skip_purge))
+        QUAST_NUCLEAR(quast_nuclear_in, Channel.value(false), Channel.value(false), Channel.value([]), Channel.value(params.skip_purge))
     }
 
     // 9b. BUSCO — nuclear only

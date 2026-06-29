@@ -68,6 +68,9 @@ process FINAL_SUMMARY {
     GFRAC_FLYE=\$(qval "Genome fraction (%)" "flye")
     GFRAC_PURGE=\$(qval "Genome fraction (%)" "purge")
     GFRAC_SCAFFOLD=\$(qval "Genome fraction (%)" "scaffold")
+    # Pre-purge (Medaka) RagTag scaffold, when present — column label "medaka_scaf"
+    # deliberately lacks the substring "scaffold" so the lookup above is unaffected.
+    GFRAC_MEDAKA_SCAF=\$(qval "Genome fraction (%)" "medaka_scaf")
     N50_FLYE=\$(qval "N50" "flye")
     N50_SCAFFOLD=\$(qval "N50" "scaffold")
     LEN_FLYE=\$(qval "Total length" "flye")
@@ -261,6 +264,11 @@ process FINAL_SUMMARY {
           echo
         fi
         echo "> **Interpretation:** \$(purge_interp)"
+        # Pre-purge comparison: RagTag on the Medaka assembly (no purge_dups).
+        if [ -n "\$GFRAC_MEDAKA_SCAF" ] && [ "\$GFRAC_MEDAKA_SCAF" != "0" ]; then
+          echo
+          echo "> **Pre-purge comparison:** scaffolding the Medaka assembly *without* purge_dups (the medaka_scaf column) retains genome fraction \${GFRAC_MEDAKA_SCAF}% vs \${GFRAC_SCAFFOLD}% after purge_dups. A large gap means purge_dups discarded unique sequence (over-purging) rather than haplotigs -- consider running with --skip_purge."
+        fi
       fi
       echo
 
