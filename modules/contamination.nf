@@ -12,9 +12,11 @@ process KRAKEN2_CLASSIFY {
     label         'qc_heavy'
     errorStrategy 'ignore'   // advisory screening — never fail the pipeline
     publishDir    { "${params.outdir}/qc/kraken2/${sample_id}" }, mode: 'copy'
-    // NB: the hdcf5f25 builds fail to unpack under unprivileged apptainer ("linuxrc"
-    // hardlink: operation not permitted). The h077b44d base unpacks cleanly.
-    container     'quay.io/biocontainers/kraken2:2.1.3--pl5321h077b44d_4'
+    // NB: biocontainers kraken2 images use a busybox base whose hardlinked applets
+    // (linuxrc, usr/bin/[) fail to unpack under this cluster's rootless apptainer
+    // ("unpriv.link: operation not permitted"). staphb/kraken2 is Ubuntu-based with
+    // separate coreutils binaries (no problematic hardlinks) and unpacks cleanly.
+    container     'quay.io/staphb/kraken2:2.1.3'
 
     input:
     tuple val(sample_id), val(stage), path(assembly), path(bam), path(bai)
