@@ -23,12 +23,25 @@ For each sample:
 2. **Filter** — filtlong (min length 1 kb, min mean quality 80)
 3. **Map to organelles** — minimap2 against combined cp + mt reference
 4. **Partition reads** — split into chloroplast / mitochondrial / nuclear sets
-5. **Assemble** — Flye for each compartment
-6. **Polish nuclear** — Medaka
-7. **Purge duplicates** — purge_dups removes haplotigs
-8. **Phase (optional)** — HapDup for diploid output (off by default)
-9. **BUSCO** — completeness check on final nuclear assembly
-10. **MultiQC** — aggregated report
+5. **Assemble organelles** — Flye per compartment (default), or Oatk HMM-based read
+   detection on all filtered reads (`--organelle_assembler oatk`)
+6. **Filter organelle contigs** — reference-based filter removes nuclear-inserted
+   organelle sequence (NUPTs/NUMTs)
+7. **Assemble nuclear genome** — Flye
+8. **Polish nuclear** — Medaka
+9. **Purge duplicates** — purge_dups always runs; both the purged and unpurged
+   (Medaka) genomes are carried forward for comparison
+10. **Phase (optional)** — HapDup for diploid output (`--run_hapdup`, off by default)
+11. **Scaffold (optional)** — RagTag correct + scaffold against `--nuclear_ref`, run on
+    both candidate genomes
+12. **Compare & select final** — QUAST + BUSCO score both candidates side-by-side (this
+    exposes purge_dups over-purging); `--final_assembly medaka|purge` (default `medaka`)
+    picks which one is published as the final genome
+13. **Contaminant screening (optional)** — Kraken2 classification + BlobTools
+    coverage/taxonomy blob plots on the final genome (`--run_kraken2`, `--run_blobtools`,
+    `--run_qualimap`)
+14. **Reports** — MultiQC aggregation, a human-readable per-sample assembly summary
+    (`FINAL_SUMMARY`, requires `--nuclear_ref`), and a tool-citations report
 
 ## Directory structure expected
 
@@ -82,27 +95,41 @@ Add `--run_hapdup` to either command above.
 
 ## Key parameters
 
-| Parameter         | Default                                | Notes                                          |
-|------------------|----------------------------------------|------------------------------------------------|
-| `--reads`         | `./reads`                              | Dir containing `<sample_id>/*.fastq.gz`        |
-| `--cp_ref`        | (required)                             | Chloroplast reference FASTA                    |
-| `--mt_ref`        | (required)                             | Mitochondrion reference FASTA                  |
-| `--genome_size`   | `720m`                                 | Estimated nuclear genome size for Flye         |
-| `--medaka_model`  | `r1041_e82_400bps_sup_v5.0.0`          | Match your basecaller + chemistry              |
-| `--busco_lineage` | `poales_odb10`                         | Plant lineage; downloaded auto by BUSCO        |
-| `--run_hapdup`    | `false`                                | Enable for diploid phasing                     |
-| `--outdir`        | `results`                              | Output directory                               |
+| Parameter               | Default                                | Notes                                                          |
+|------------------------|-----------------------------------------|-----------------------------------------------------------------|
+| `--reads`               | `./reads`                              | Dir containing `<sample_id>/*.fastq.gz`                        |
+| `--cp_ref`              | (required)                             | Chloroplast reference FASTA                                    |
+| `--mt_ref`              | (required)                             | Mitochondrion reference FASTA                                  |
+| `--nuclear_ref`         | none                                    | Nuclear reference FASTA; enables RagTag scaffolding, QUAST genome-fraction, and `FINAL_SUMMARY` |
+| `--organelle_assembler` | `flye`                                 | `flye` (per-compartment) or `oatk` (HMM-based read detection)  |
+| `--genome_size`         | `720m`                                 | Estimated nuclear genome size for Flye                         |
+| `--medaka_model`        | `r1041_e82_400bps_sup_v5.0.0`          | Match your basecaller + chemistry                               |
+| `--busco_lineage`       | `poales_odb10`                         | Plant lineage; downloaded auto by BUSCO                        |
+| `--run_hapdup`          | `false`                                | Enable for diploid phasing                                     |
+| `--calcuts_args`        | `""` (autotune)                        | Manual purge_dups cutoffs, e.g. `"-l 5 -m 22 -u 120"`           |
+| `--final_assembly`      | `medaka`                               | `medaka` (unpurged) or `purge` — selects the published final nuclear genome; purge_dups always runs and both are compared |
+| `--run_qualimap`        | `false`                                | BAM-level coverage QC on the final genome                      |
+| `--run_blobtools`       | `false`                                | Coverage-vs-GC blob plot on the final genome                   |
+| `--run_kraken2`         | `false`                                | Taxonomic contaminant screening on the final genome (needs `--kraken2_db` / `--taxdump_dir`) |
+| `--kraken2_db`          | PlusPF DB path                         | Kraken2 database; small enough to load fully into RAM          |
+| `--taxdump_dir`         | PlusPF DB path                         | NCBI taxdump (nodes.dmp/names.dmp) BlobTools uses to resolve Kraken2 taxids |
+| `--outdir`              | `results`                              | Output directory                                                |
+
+> `--skip_purge` is retired — purge_dups always runs now; use `--final_assembly medaka` (equivalent to the old skip behavior) or `--final_assembly purge`.
 
 ## Resource classes (configured in nextflow.config)
 
-| Label             | CPUs | RAM     | Time  | Used by                              |
-|-------------------|------|---------|-------|--------------------------------------|
-| `qc`              | 4    | 8 GB    | 2h    | NanoPlot, filtlong, MultiQC          |
-| `qc_heavy`        | 16   | 32 GB   | 12h   | BUSCO                                |
-| `map`             | 16   | 32 GB   | 6h    | minimap2 + samtools                  |
-| `assemble_small`  | 8    | 16 GB   | 4h    | Flye on cp / mt                      |
-| `assemble_heavy`  | 32   | 256 GB  | 72h   | Flye nuclear, HapDup                 |
-| `polish`          | 16   | 64 GB   | 24h   | Medaka, purge_dups                   |
+| Label             | CPUs | RAM     | Time   | Used by                                         |
+|-------------------|------|---------|--------|--------------------------------------------------|
+| `qc`              | 16   | 128 GB  | 12h    | NanoPlot, filtlong, MultiQC                      |
+| `qc_heavy`        | 16   | 128 GB  | 24h    | BUSCO, QUAST, Qualimap, BlobTools, Kraken2       |
+| `map`             | 24   | 128 GB  | 12h    | minimap2 + samtools                              |
+| `assemble_small`  | 16   | 128 GB  | 6h     | Flye on cp / mt                                  |
+| `assemble_heavy`  | 32   | 448 GB  | 120h   | Flye nuclear, HapDup                             |
+| `polish`          | 24   | 256 GB  | 48h    | Medaka, purge_dups                               |
+
+`KRAKEN2_CLASSIFY` overrides `qc_heavy` to 160 GB (`withName` in nextflow.config) so the
+104 GB PlusPF database loads fully into RAM instead of relying on `--memory-mapping`.
 
 Adjust to your cluster's queue limits and node capacity.
 
@@ -115,7 +142,6 @@ Adjust to your cluster's queue limits and node capacity.
 
 ## What's NOT yet included (Phase 3+)
 
-- Scaffolding against BTx623 (RagTag / YaHS)
 - Merqury QV estimation
 - Organelle annotation (GeSeq / PGA)
 - Illumina polishing (Pilon)
