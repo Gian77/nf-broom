@@ -1,10 +1,10 @@
 # nf-broom 
 
 <!-- badges: start -->
-[![Visits](https://img.shields.io/badge/visits-count-blue)](https://github.com/OWNER/REPO)
-[![Latest Release](https://img.shields.io/github/v/release/OWNER/REPO)](https://github.com/OWNER/REPO/releases)
-[![Total Downloads](https://img.shields.io/github/downloads/OWNER/REPO/total)](https://github.com/OWNER/REPO/releases)
-[![Open Issues](https://img.shields.io/github/issues/OWNER/REPO)](https://github.com/OWNER/REPO/issues)
+[![Visits](https://visitor-badge.laobi.icu/badge?page_id=Gian77.nf-broom)](https://github.com/Gian77/nf-broom)
+[![Latest Release](https://img.shields.io/github/v/release/Gian77/nf-broom?include_prereleases)](https://github.com/Gian77/nf-broom/releases)
+[![Total Downloads](https://img.shields.io/github/downloads/Gian77/nf-broom/total)](https://github.com/Gian77/nf-broom/releases)
+[![Open Issues](https://img.shields.io/github/issues/Gian77/nf-broom)](https://github.com/Gian77/nf-broom/issues)
 <!-- badges: end -->
 
 ## a nextflow pipeline for plant genome assembly
