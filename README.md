@@ -7,12 +7,12 @@
 [![Open Issues](https://img.shields.io/github/issues/OWNER/REPO)](https://github.com/OWNER/REPO/issues)
 <!-- badges: end -->
 
-## a nextflow pipeline for plnt genome assembly
+## a nextflow pipeline for plant genome assembly
 
-`nf-broom` is a [nextflow](https://www.nextflow.io/) pipeline for plnt genome assembly. 
+`nf-broom` is a [nextflow](https://www.nextflow.io/) pipeline for plant genome assembly. 
 This pipeline is currently under development. At the moment this is ONT-only de novo 
 assembly developed for sorghum genomes with explicit organelle separation. The name 
-**nf-broom** comes from an older common name for sorhgum i.e. broom, as it was used to 
+**nf-broom** comes from an older common name for sorghum, i.e. broom, as it was used to 
 make brooms.
 
 ## What nf-broom does (for now)
@@ -46,14 +46,20 @@ For each sample:
 ## Directory structure expected
 
 ```
-sorghum-assembly/
+nf-broom/
 ├── main.nf
 ├── nextflow.config
 ├── modules/
-│   ├── qc.nf
-│   ├── mapping.nf
-│   ├── assembly.nf
-│   └── polishing.nf
+│   ├── qc.nf              # NanoPlot, filtering, QUAST, BUSCO, Qualimap, MultiQC
+│   ├── mapping.nf          # organelle alignment, read partitioning
+│   ├── dbs.nf              # OatkDB fetch (organelle HMM databases)
+│   ├── assembly.nf         # Flye / Oatk organelle + nuclear assembly
+│   ├── polishing.nf        # Medaka, purge_dups, HapDup
+│   ├── scaffolding.nf      # RagTag correct + scaffold
+│   ├── contamination.nf    # Kraken2 + BlobTools taxonomy screening
+│   └── reports.nf          # FINAL_SUMMARY + TOOLS_REPORT
+├── refs/                        <-- you provide
+│   └── sorghum/*.fasta
 └── reads/                       <-- you provide
     ├── sample_A/
     │   └── *.fastq.gz
@@ -64,9 +70,11 @@ sorghum-assembly/
 
 ## Running
 
-### Local test (small data, validate the wiring)
+### Local test (validate the wiring, no compute)
 
-This may fail depending on how big your subsetted data is. For example, if too small it is hard to assemble the genome and all the coverage parameters will be off.
+To check the pipeline wires up correctly (channels, params, DAG) without running any process
+or needing real coverage, use `-preview` (see Sanity checks below). For an actual assembly run
+on a small dataset, use a real full sample rather than a subsample — see Test run below for why.
 
 ```bash
 nextflow run main.nf \
@@ -160,21 +168,26 @@ nextflow run main.nf -preview --cp_ref ... --mt_ref ...
 nextflow run main.nf -profile condor --reads ./reads_single_sample ...
 ```
 
-## Use the `test_channel.nf` to test
-```bash
-nextflow run test_channel.nf --reads reads/
-```
-
 ## Test run
-# Pick one sample, subsample to ~100,000 reads (again, this may fail becasue to small of a subset)
+
+**Do not test with a random read subsample** (e.g. `seqkit sample -n 50000 ...`). De novo
+assembly needs real depth across the whole genome — Flye/purge_dups/scaffolding all expect
+20-30x+ coverage, and a random subsample of a few thousand-to-tens-of-thousands of reads sits
+far below that. It doesn't just make the assembly worse, it typically fails to assemble at all
+or produces a wildly fragmented result that tells you nothing about whether the pipeline itself
+is wired correctly.
+
+To validate the pipeline wiring without spending compute, use `-preview` (see Sanity checks
+above) — it builds the DAG and checks channel wiring without executing any process.
+
+To actually test assembly quality on a fast, cheap run, use a **real but small whole sample**
+(a lower-depth or smaller-genome sample if you have one) rather than a subsample of a large one
+— e.g. the `B11077_test/` / `F10702_test/` wrapper-dir pattern used elsewhere in this README,
+which point at full per-sample read sets:
 
 ```
-mkdir -p reads_test/test_sample
-seqkit sample -n 50000 reads/genotype_1/*.fastq.gz -o reads_test/test_sample/test.fastq.gz
-
-# Run
 nextflow run main.nf \
-    --reads $PWD/reads_test \
+    --reads $PWD/B11077_test/ \
     -profile condor \
     --cp_ref refs/sorghum/sorghum_cp_NC008602.fasta \
     --mt_ref refs/sorghum/sorghum_mt_NC008360.fasta \
