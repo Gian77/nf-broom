@@ -50,23 +50,25 @@ process FILTER_READS {
 }
 
 process BUSCO_NUCLEAR {
-    tag        { sample_id }
+    tag        { "${sample_id}_${stage}" }
     label      'qc_heavy'
-    publishDir { "${params.outdir}/qc/busco/${sample_id}" }, mode: 'copy'
+    publishDir { "${params.outdir}/qc/busco/${sample_id}_${stage}" }, mode: 'copy'
     container  'quay.io/biocontainers/busco:5.8.0--pyhdfd78af_0'
 
     input:
-    tuple val(sample_id), path(assembly)
+    // stage ('medaka'|'purge') disambiguates the two candidate genomes BUSCO runs on so
+    // their output dirs do not collide under qc/busco/.
+    tuple val(sample_id), val(stage), path(assembly)
 
     output:
-    tuple val(sample_id), path("busco_${sample_id}/*"),                  emit: full
-    tuple val(sample_id), path("busco_${sample_id}/short_summary*.txt"), emit: summary
+    tuple val(sample_id), val(stage), path("busco_${sample_id}_${stage}/*"),                  emit: full
+    tuple val(sample_id), val(stage), path("busco_${sample_id}_${stage}/short_summary*.txt"), emit: summary
 
     script:
     """
     busco \\
         --in ${assembly} \\
-        --out busco_${sample_id} \\
+        --out busco_${sample_id}_${stage} \\
         --mode genome \\
         --lineage_dataset ${params.busco_lineage} \\
         --cpu ${task.cpus}
@@ -136,7 +138,6 @@ process QUAST_NUCLEAR {
     val  has_scaffold          // true → include scaffold + reference
     val  has_medaka_scaffold   // true → also include the pre-purge (Medaka) RagTag scaffold
     path reference             // pass [] when no nuclear_ref
-    val  skip_purge            // true → purge column is medaka passthrough; adjust label
 
     output:
     tuple val(sample_id), path("quast_${sample_id}_nuclear"),              emit: report
@@ -145,7 +146,7 @@ process QUAST_NUCLEAR {
     script:
     def ref_arg     = reference  ? "--reference ${reference}" : ""
     def ref_asm     = reference  ? " ${reference}" : ""
-    def purge_label = skip_purge ? "medaka_nopurge" : "purge_dups"
+    def purge_label = "purge_dups"   // purge_dups always runs now
     // Build the column list in order: flye, medaka, [medaka_scaf], purge, [scaffold], [reference].
     // "medaka_scaf" deliberately omits the substring "scaffold" so the report's
     // qval "scaffold" lookup still resolves to the canonical purge-stage scaffold.

@@ -38,4 +38,5 @@ exec "${CONDA_ENV}/bin/nextflow" run "${PROJECT_DIR}/main.nf" \
     --run_qualimap \
     --run_blobtools \
     --run_kraken2 \
+    --final_assembly ${FINAL_ASSEMBLY:-medaka} \
     ${RESUME}

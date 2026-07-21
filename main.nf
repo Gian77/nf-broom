@@ -72,7 +72,7 @@ include {NANOPLOT; FILTER_READS; FILTER_ORGANELLE_CONTIGS; BUSCO_NUCLEAR; MULTIQ
 include {FETCH_OATKDB} from './modules/dbs.nf'
 include {ALIGN_TO_ORGANELLES; SORT_INDEX_BAM; EXTRACT_RAW_READSETS; DEDUP_ORGANELLE_READS; READSET_STATS} from './modules/mapping.nf'
 include {ASSEMBLE_CP_FLYE; ASSEMBLE_MT_FLYE; ASSEMBLE_ORGANELLES_OATK; ASSEMBLE_NUCLEAR} from './modules/assembly.nf'
-include {POLISH_MEDAKA; PURGE_DUPS; SKIP_PURGE_MARKER; ALIGN_FOR_HAPDUP; SORT_FOR_HAPDUP; HAPDUP} from './modules/polishing.nf'
+include {POLISH_MEDAKA; PURGE_DUPS; ALIGN_FOR_HAPDUP; SORT_FOR_HAPDUP; HAPDUP} from './modules/polishing.nf'
 include {RAGTAG_SCAFFOLD; RAGTAG_SCAFFOLD as RAGTAG_PREPURGE} from './modules/scaffolding.nf'
 include {KRAKEN2_CLASSIFY; BLOBTOOLS_TAXONOMY} from './modules/contamination.nf'
 include {FINAL_SUMMARY; TOOLS_REPORT} from './modules/reports.nf'
@@ -85,6 +85,18 @@ workflow {
     if (params.help) {
         helpMessage()
         return            // exits the workflow cleanly — no `exit 0` needed
+    }
+
+    // ---- Validate --final_assembly (and retire --skip_purge) ----
+    // purge_dups always runs now; --skip_purge has been replaced by --final_assembly, which
+    // selects the published genome (params is immutable at runtime, so we don't silently remap).
+    if (params.skip_purge != null) {
+        def repl = (params.skip_purge.toString().toLowerCase() == 'true') ? 'medaka' : 'purge'
+        exit 1, "ERROR: --skip_purge is retired. Use --final_assembly ${repl} " +
+                "(purge_dups always runs; --final_assembly selects medaka|purge as the final)."
+    }
+    if (!(params.final_assembly in ['medaka', 'purge'])) {
+        exit 1, "ERROR: --final_assembly must be 'medaka' or 'purge' (got '${params.final_assembly}')"
     }
 
     // ---- Banner ----
@@ -105,7 +117,7 @@ workflow {
         busco lineage       : ${params.busco_lineage}
         medaka model        : ${params.medaka_model}
         run HapDup          : ${params.run_hapdup}
-        skip purge_dups     : ${params.skip_purge}
+        final assembly      : ${params.final_assembly}  (purge_dups always runs; both genomes compared)
         """.stripIndent()
 
     // ---- Reference channels ----
@@ -221,20 +233,14 @@ workflow {
         .join(EXTRACT_RAW_READSETS.out.nuclear_reads)
     POLISH_MEDAKA(polish_in)
 
-    // 7. Purge haplotigs (or bypass with --skip_purge to go medaka → scaffold directly)
-    if (params.skip_purge) {
-        purge_final      = POLISH_MEDAKA.out.assembly
-        SKIP_PURGE_MARKER(POLISH_MEDAKA.out.assembly)
-        purge_cutoffs_ch = SKIP_PURGE_MARKER.out.cutoffs
-        purge_calcuts_ch = SKIP_PURGE_MARKER.out.calcuts_log
-    } else {
-        purge_in = POLISH_MEDAKA.out.assembly
-            .join(EXTRACT_RAW_READSETS.out.nuclear_reads)
-        PURGE_DUPS(purge_in)
-        purge_final      = PURGE_DUPS.out.assembly
-        purge_cutoffs_ch = PURGE_DUPS.out.cutoffs
-        purge_calcuts_ch = PURGE_DUPS.out.calcuts_log
-    }
+    // 7. Purge haplotigs — ALWAYS runs. Both the purged and the Medaka genomes are scaffolded
+    //    and compared (QUAST + BUSCO); --final_assembly selects which becomes the published final.
+    purge_in = POLISH_MEDAKA.out.assembly
+        .join(EXTRACT_RAW_READSETS.out.nuclear_reads)
+    PURGE_DUPS(purge_in)
+    purge_final      = PURGE_DUPS.out.assembly
+    purge_cutoffs_ch = PURGE_DUPS.out.cutoffs
+    purge_calcuts_ch = PURGE_DUPS.out.calcuts_log
 
     // 8. Optional: HapDup phasing
     if (params.run_hapdup) {
@@ -250,74 +256,65 @@ workflow {
         HAPDUP(SORT_FOR_HAPDUP.out.bam)
     }
 
-    // 8b. Chromosome scaffolding with RagTag (correct + scaffold), if a nuclear
-    //     reference is provided. QC then runs on the scaffolded assembly.
+    // 8b. Chromosome scaffolding (RagTag correct + scaffold) when a nuclear reference is given.
+    //     purge_dups always runs, so BOTH the purged and the Medaka genomes are scaffolded and
+    //     compared; --final_assembly selects which scaffold becomes the published final.
     if (params.nuclear_ref) {
-        // Canonical (purge-stage) scaffold — the pipeline's final nuclear assembly.
         RAGTAG_SCAFFOLD(purge_final.map { id, fa -> tuple(id, 'purge', fa) }, nuclear_ref_ch)
-        nuclear_final = RAGTAG_SCAFFOLD.out.scaffold
+        RAGTAG_PREPURGE(POLISH_MEDAKA.out.assembly.map { id, fa -> tuple(id, 'medaka', fa) }, nuclear_ref_ch)
+        purge_candidate  = RAGTAG_SCAFFOLD.out.scaffold
+        medaka_candidate = RAGTAG_PREPURGE.out.scaffold
+        // RagTag stats for the selected final genome (drives the FINAL_SUMMARY scaffold section).
+        final_ragtag_ch  = (params.final_assembly == 'purge') ? RAGTAG_SCAFFOLD.out.stats
+                                                              : RAGTAG_PREPURGE.out.stats
 
-        // When purge_dups runs, also scaffold the pre-purge (Medaka) assembly so the
-        // QUAST table shows medaka_scaf vs purge scaffold side-by-side. This exposes
-        // over-purging: if purge_dups discards unique sequence, medaka_scaf retains a
-        // much higher genome fraction. Skipped under --skip_purge (no purge to compare).
-        if (!params.skip_purge) {
-            RAGTAG_PREPURGE(POLISH_MEDAKA.out.assembly.map { id, fa -> tuple(id, 'medaka', fa) }, nuclear_ref_ch)
-            medaka_scaffold_ch  = RAGTAG_PREPURGE.out.scaffold
-            has_medaka_scaffold = true
-        } else {
-            medaka_scaffold_ch  = RAGTAG_SCAFFOLD.out.scaffold   // placeholder, excluded via flag
-            has_medaka_scaffold = false
-        }
-
-        // All assembly stages + reference for direct comparison
+        // QUAST 5-way: flye / medaka / medaka_scaf / purge / purge_scaffold vs reference.
         quast_nuclear_in = ASSEMBLE_NUCLEAR.out.assembly
             .join(POLISH_MEDAKA.out.assembly)
-            .join(medaka_scaffold_ch)
+            .join(medaka_candidate)
             .join(purge_final)
-            .join(RAGTAG_SCAFFOLD.out.scaffold)
+            .join(purge_candidate)
             .map { id, flye, medaka, mscaf, purge, scaffold ->
                 tuple(id, flye, medaka, mscaf, purge, scaffold)
             }
-        QUAST_NUCLEAR(quast_nuclear_in, Channel.value(true), Channel.value(has_medaka_scaffold), nuclear_ref_ch, Channel.value(params.skip_purge))
+        QUAST_NUCLEAR(quast_nuclear_in, Channel.value(true), Channel.value(true), nuclear_ref_ch)
     } else {
-        nuclear_final = purge_final
+        // No reference → no scaffolding; the candidates are the unscaffolded genomes.
+        purge_candidate  = purge_final
+        medaka_candidate = POLISH_MEDAKA.out.assembly
 
-        // Three stages without scaffold or reference (medaka_scaf / scaffold are placeholders)
         quast_nuclear_in = ASSEMBLE_NUCLEAR.out.assembly
             .join(POLISH_MEDAKA.out.assembly)
             .join(purge_final)
             .map { id, flye, medaka, purge ->
-                tuple(id, flye, medaka, purge, purge, purge)  // asm_medaka_scaffold + asm_scaffold unused
+                tuple(id, flye, medaka, purge, purge, purge)  // medaka_scaf + scaffold unused
             }
-        QUAST_NUCLEAR(quast_nuclear_in, Channel.value(false), Channel.value(false), Channel.value([]), Channel.value(params.skip_purge))
+        QUAST_NUCLEAR(quast_nuclear_in, Channel.value(false), Channel.value(false), Channel.value([]))
     }
 
-    // 9b. BUSCO — nuclear only
-    BUSCO_NUCLEAR(nuclear_final)
+    // Select the published final genome (default: Medaka).
+    nuclear_final = (params.final_assembly == 'purge') ? purge_candidate : medaka_candidate
 
-    // 9c. Optional: BAM-level QC (Qualimap) and coverage blob plots (BlobTools)
-    //     One sorted BAM per assembly stage is computed once and shared between both tools.
+    // 9b. BUSCO on BOTH candidates (stage-tagged so qc/busco/ dirs don't collide). The
+    //     comparison feeds the report; the final genome's BUSCO drives the summary verdict.
+    busco_in = medaka_candidate.map { id, fa -> tuple(id, 'medaka', fa) }
+        .mix( purge_candidate.map { id, fa -> tuple(id, 'purge', fa) } )
+    BUSCO_NUCLEAR(busco_in)
+
+    // 9c. Final-only QC: ONE read-to-assembly BAM for the chosen final genome, shared by
+    //     Qualimap / BlobTools / Kraken2 (the discarded candidate gets no BAM-level QC).
     if (params.run_qualimap || params.run_blobtools || params.run_kraken2) {
-        qc_stages = purge_final
-            .map { sid, fa -> tuple(sid, "purge", fa) }
-
-        if (params.nuclear_ref) {
-            qc_stages = qc_stages.mix(
-                RAGTAG_SCAFFOLD.out.scaffold
-                    .map { sid, fa -> tuple(sid, "scaffold", fa) }
-            )
-        }
-
-        qc_align_in = qc_stages.combine(EXTRACT_RAW_READSETS.out.nuclear_reads, by: 0)
+        qc_align_in = nuclear_final
+            .map { sid, fa -> tuple(sid, params.final_assembly, fa) }
+            .combine(EXTRACT_RAW_READSETS.out.nuclear_reads, by: 0)
         ALIGN_FOR_QC(qc_align_in)
         SORT_FOR_QC(ALIGN_FOR_QC.out.sam)
 
         if (params.run_qualimap)  QUALIMAP_BAMQC(SORT_FOR_QC.out.bam)
         if (params.run_blobtools) BLOBTOOLS_COVERAGE(SORT_FOR_QC.out.bam)
 
-        // Contaminant screening: Kraken2 classifies contigs, then BlobTools renders the
-        // blob plot coloured by the resulting taxonomy (non-Viridiplantae = candidate contam).
+        // Contaminant screening on the final genome: Kraken2 classifies contigs, then BlobTools
+        // renders the blob plot coloured by taxonomy (non-Viridiplantae = candidate contam).
         if (params.run_kraken2) {
             kraken2_db_ch = Channel.value(file(params.kraken2_db,  checkIfExists: true))
             taxdump_ch    = Channel.value(file(params.taxdump_dir, checkIfExists: true))
@@ -333,14 +330,11 @@ workflow {
     multiqc_in = Channel.empty()
         .mix( NANOPLOT.out.report.map                        { sample, f -> f } )
         .mix( READSET_STATS.out.mqc.map                      { sample, f -> f } )
-        .mix( BUSCO_NUCLEAR.out.summary.map                  { sample, f -> f } )
+        .mix( BUSCO_NUCLEAR.out.summary.map                  { sample, stage, f -> f } )
         .mix( QUAST_ORGANELLE.out.report.map                 { sample, comp, d -> d } )
         .mix( QUAST_NUCLEAR.out.report.map                   { sample, d -> d } )
-    if (!params.skip_purge) {
-        multiqc_in = multiqc_in
-            .mix( PURGE_DUPS.out.pbstat.map  { sample, f -> f } )
-            .mix( PURGE_DUPS.out.cutoffs.map { sample, f -> f } )
-    }
+        .mix( PURGE_DUPS.out.pbstat.map                      { sample, f -> f } )
+        .mix( PURGE_DUPS.out.cutoffs.map                     { sample, f -> f } )
 
     if (params.run_qualimap) {
         multiqc_in = multiqc_in.mix(
@@ -350,19 +344,29 @@ workflow {
 
     MULTIQC(multiqc_in.collect())
 
-    // 11. Human-readable per-sample summary
-    nano_stats_ch = NANOPLOT.out.report
-        .map { id, files ->
-            def list = files instanceof List ? files : [files]
-            tuple(id, list.find { it.name == 'NanoStats.txt' })
-        }
-    summary_in = nano_stats_ch
-        .join(QUAST_NUCLEAR.out.report)
-        .join(BUSCO_NUCLEAR.out.summary)
-        .join(purge_cutoffs_ch)
-        .join(purge_calcuts_ch)
-        .join(RAGTAG_SCAFFOLD.out.stats)
-    FINAL_SUMMARY(summary_in)
+    // 11. Human-readable per-sample summary (requires a reference for RagTag scaffold stats).
+    //     BUSCO ran on both candidates; pass the final genome's summary plus both candidates'
+    //     summaries so the report can show the Medaka-vs-purge comparison.
+    if (params.nuclear_ref) {
+        nano_stats_ch = NANOPLOT.out.report
+            .map { id, files ->
+                def list = files instanceof List ? files : [files]
+                tuple(id, list.find { it.name == 'NanoStats.txt' })
+            }
+        busco_summ      = BUSCO_NUCLEAR.out.summary   // (id, stage, file)
+        medaka_busco_ch = busco_summ.filter { id, stage, f -> stage == 'medaka' }.map { id, stage, f -> tuple(id, f) }
+        purge_busco_ch  = busco_summ.filter { id, stage, f -> stage == 'purge'  }.map { id, stage, f -> tuple(id, f) }
+
+        // FINAL_SUMMARY picks the final genome's BUSCO from medaka/purge in-script.
+        summary_in = nano_stats_ch
+            .join(QUAST_NUCLEAR.out.report)
+            .join(purge_cutoffs_ch)
+            .join(purge_calcuts_ch)
+            .join(final_ragtag_ch)
+            .join(medaka_busco_ch)
+            .join(purge_busco_ch)
+        FINAL_SUMMARY(summary_in)
+    }
     TOOLS_REPORT()
 
     // Capture outdir into a local — `params` resolves to null inside the

@@ -3,14 +3,14 @@
 // per-contig taxids are turned into a BlobTools "hits" file so the coverage-vs-GC blob plot
 // is coloured by taxonomy — non-Viridiplantae contigs stand out as candidate contamination.
 //
-// The DB (~456 GB) exceeds node RAM, so Kraken2 runs with --memory-mapping (reads the DB
-// from disk instead of loading it). The NCBI taxdump (nodes.dmp/names.dmp) lets BlobTools
-// resolve taxids to lineage.
+// The PlusPF DB (~104 GB hash) fits in RAM, so Kraken2 loads it fully (no --memory-mapping)
+// — one sequential read, then fast classification. PlusPF ships its own nodes.dmp/names.dmp,
+// which BlobTools uses to resolve taxids to lineage.
 
 process KRAKEN2_CLASSIFY {
     tag           { "${sample_id}_${stage}" }
-    label         'qc_heavy'
-    errorStrategy 'ignore'   // advisory screening — never fail the pipeline
+    label         'qc_heavy'   // 160 GB override set via withName in nextflow.config
+    errorStrategy 'ignore'     // advisory screening — never fail the pipeline
     publishDir    { "${params.outdir}/qc/kraken2/${sample_id}" }, mode: 'copy'
     // NB: biocontainers kraken2 images use a busybox base whose hardlinked applets
     // (linuxrc, usr/bin/[) fail to unpack under this cluster's rootless apptainer
@@ -30,9 +30,8 @@ process KRAKEN2_CLASSIFY {
     script:
     def pfx = "${sample_id}_${stage}"
     """
-    # --memory-mapping: read the DB from disk rather than loading 456 GB into RAM.
+    # PlusPF (~104 GB) loads fully into the 160 GB RAM allocation — no --memory-mapping.
     kraken2 --db ${kraken2_db} \\
-        --memory-mapping \\
         --threads ${task.cpus} \\
         --output ${pfx}.kraken2.out \\
         --report ${pfx}.kraken2.report \\
@@ -62,14 +61,18 @@ process BLOBTOOLS_TAXONOMY {
     script:
     def pfx = "blobtax_${sample_id}_${stage}"
     """
-    # Build the BlobDB with taxonomy. --nodes/--names point at the NCBI taxdump so the
-    # Kraken2 taxids resolve to a lineage; default taxrule (bestsum) picks the per-contig hit.
+    # Build the BlobDB with taxonomy. --nodes/--names point at the taxdump so the Kraken2
+    # taxids resolve to a lineage; default taxrule (bestsum) picks the per-contig hit.
+    # --db gives a WRITABLE cwd path for the built nodesDB: without it blobtools tries to
+    # cache nodesDB.txt back into its read-only package dir and dies (Errno 30). The file
+    # does not exist yet, so blobtools builds it here from --nodes/--names.
     blobtools create \\
         -i ${assembly} \\
         -b ${bam} \\
         -t ${hits} \\
         --nodes ${taxdump}/nodes.dmp \\
         --names ${taxdump}/names.dmp \\
+        --db nodesDB.txt \\
         -o ${pfx}
 
     # Blob plot + table coloured by phylum; prefix outputs so they match the publish glob.

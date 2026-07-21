@@ -12,8 +12,12 @@ process FINAL_SUMMARY {
     container     'quay.io/biocontainers/multiqc:1.25.1--pyhdfd78af_0'
 
     input:
-    tuple val(sample_id), path(nanostats), path(quast_nuclear), path(busco_summary),
-          path(purge_cutoffs), path(purge_calcuts_log), path(ragtag_stats)
+    // BUSCO ran on both candidates; the script picks the final genome's summary from these
+    // (staged under distinct names to avoid a collision when final == medaka).
+    tuple val(sample_id), path(nanostats), path(quast_nuclear),
+          path(purge_cutoffs), path(purge_calcuts_log), path(ragtag_stats),
+          path(busco_medaka, stageAs: 'busco_medaka_summary.txt'),
+          path(busco_purge,  stageAs: 'busco_purge_summary.txt')
 
     output:
     tuple val(sample_id), path("${sample_id}_assembly_summary.md"), emit: summary
@@ -22,13 +26,18 @@ process FINAL_SUMMARY {
     def busco_lin = params.busco_lineage
     def sample    = sample_id
     def gsize     = params.genome_size
+    def final_asm = params.final_assembly
+    def screened  = (params.run_kraken2 || params.run_blobtools)
     """
     #!/usr/bin/env bash
     set -uo pipefail
 
     NANO="${nanostats}"
     QUAST="${quast_nuclear}/report.tsv"
-    BUSCO=\$(ls ${busco_summary} 2>/dev/null | head -1)
+    BUSCO_MEDAKA="busco_medaka_summary.txt"
+    BUSCO_PURGE="busco_purge_summary.txt"
+    # Headline BUSCO = the published final genome's (default medaka).
+    if [ "${final_asm}" = "purge" ]; then BUSCO="\$BUSCO_PURGE"; else BUSCO="\$BUSCO_MEDAKA"; fi
     CUTOFFS="${purge_cutoffs}"
     CALCUTS="${purge_calcuts_log}"
     RAGTAG="${ragtag_stats}"
@@ -79,6 +88,16 @@ process FINAL_SUMMARY {
     MISASM_FLYE=\$(qval "# misassemblies" "flye")
     MISASM_SCAFFOLD=\$(qval "# misassemblies" "scaffold")
 
+    # The published final genome is selected by --final_assembly (default: medaka). Keep the
+    # purge-scaffold genome fraction for the comparison table, then repoint the headline
+    # *_SCAFFOLD metrics at the final genome's column so the verdict/conclusion describe it.
+    GFRAC_PURGE_SCAF="\$GFRAC_SCAFFOLD"
+    if [ "${final_asm}" != "purge" ]; then
+        GFRAC_SCAFFOLD="\$GFRAC_MEDAKA_SCAF"
+        N50_SCAFFOLD=\$(qval "N50" "medaka_scaf")
+        MISASM_SCAFFOLD=\$(qval "# misassemblies" "medaka_scaf")
+    fi
+
     COVERAGE=\$(echo "${gsize}" | awk '{
         s=tolower(\$0)
         if (sub(/g\$/, "", s)) s=s*1e9
@@ -106,9 +125,13 @@ process FINAL_SUMMARY {
     BUSCO_F=\$(grep 'F:[0-9]' "\$BUSCO" 2>/dev/null | grep -o 'F:[0-9][0-9.]*' | cut -d: -f2 | head -1 || echo 0)
     BUSCO_M=\$(grep 'M:[0-9]' "\$BUSCO" 2>/dev/null | grep -o 'M:[0-9][0-9.]*' | cut -d: -f2 | head -1 || echo 0)
 
+    # BUSCO completeness/duplication for BOTH candidates (for the comparison table).
+    BUSCO_C_MEDAKA=\$(grep 'C:[0-9]' "\$BUSCO_MEDAKA" 2>/dev/null | grep -o 'C:[0-9][0-9.]*' | cut -d: -f2 | head -1 || echo 0)
+    BUSCO_D_MEDAKA=\$(grep 'D:[0-9]' "\$BUSCO_MEDAKA" 2>/dev/null | grep -o 'D:[0-9][0-9.]*' | cut -d: -f2 | head -1 || echo 0)
+    BUSCO_C_PURGE=\$(grep 'C:[0-9]' "\$BUSCO_PURGE" 2>/dev/null | grep -o 'C:[0-9][0-9.]*' | cut -d: -f2 | head -1 || echo 0)
+    BUSCO_D_PURGE=\$(grep 'D:[0-9]' "\$BUSCO_PURGE" 2>/dev/null | grep -o 'D:[0-9][0-9.]*' | cut -d: -f2 | head -1 || echo 0)
+
     PEAK=\$(grep "autotune" "\$CALCUTS" 2>/dev/null | grep -o 'Peak: [0-9]*x' | grep -o '[0-9]*' || echo "unknown")
-    SKIP_PURGE=0
-    grep -q "skip_purge" "\$CALCUTS" 2>/dev/null && SKIP_PURGE=1 || true
 
     QUALITY_TIER=\$(awk -v c="\$BUSCO_C" -v gf="\$GFRAC_SCAFFOLD" -v n50="\$N50_SCAFFOLD" 'BEGIN {
         c=c+0; gf=gf+0; n50=n50+0; score=0
@@ -171,7 +194,7 @@ process FINAL_SUMMARY {
             mech = "Removed " removed "% of assembled sequence (genome fraction: " sprintf("%.1f",gf_pre) "% -> " sprintf("%.1f",gf_post) "%, drop " sprintf("%.1f",drop) "%). "
             mech = mech "Purging is driven primarily by the self-alignment overlap step: contigs that map redundantly against the primary assembly are classified as haplotigs and discarded; the coverage cutoffs assign each contig to a depth class before overlap testing. "
             if (drop > 15)
-                verdict = "Genome fraction fell " sprintf("%.1f",drop) " points -- purge_dups removed UNIQUE reference sequence, not just haplotigs (over-purging). A true haplotig purge leaves genome fraction roughly flat. Strongly consider --skip_purge (or manual --calcuts_args), especially at low coverage. See the pre-purge comparison below."
+                verdict = "Genome fraction fell " sprintf("%.1f",drop) " points -- purge_dups removed UNIQUE reference sequence, not just haplotigs (over-purging). A true haplotig purge leaves genome fraction roughly flat. The Medaka (unpurged) genome is the default final; keep --final_assembly medaka (or set manual --calcuts_args), especially at low coverage. See the comparison below."
             else if (ret < 55)
                 verdict = "Large removal -- possible over-purging for a homozygous sample. Consider --calcuts_args to set manual cutoffs, or skip purge_dups."
             else if (ret < 75)
@@ -248,30 +271,33 @@ process FINAL_SUMMARY {
       echo "> **Interpretation:** \$(assembly_interp)"
       echo
 
-      # ── 3. Purge_dups ─────────────────────────────────────────────────────
-      echo "## 3. Haplotig removal (Purge_dups)"
+      # ── 3. Purge_dups decision ────────────────────────────────────────────
+      echo "## 3. Haplotig removal decision (purge_dups vs Medaka)"
       echo
-      if [ "\$SKIP_PURGE" -gt 0 ]; then
-        echo '> **Note:** Purge_dups was skipped (`--skip_purge true`). Assembly proceeded directly from Medaka polishing to scaffolding without haplotig removal. To compare, rerun without this flag.'
-      else
-        echo "Coverage cutoffs (junk / hap-low / hap-high / dip-low / dip-high / repeat):"
+      echo "Purge_dups always runs; both the Medaka and purged genomes are scaffolded and compared."
+      echo "**Final assembly adopted: ${final_asm}.**"
+      echo
+      echo "Coverage cutoffs (junk / hap-low / hap-high / dip-low / dip-high / repeat):"
+      echo
+      echo '```'
+      cat "\$CUTOFFS" 2>/dev/null || echo "NA"
+      echo '```'
+      echo
+      WARN=\$(grep -i "warn" "\$CALCUTS" 2>/dev/null | head -3 || true)
+      if [ -n "\$WARN" ]; then
+        echo "> **Warning:** \$WARN"
         echo
-        echo '```'
-        cat "\$CUTOFFS" 2>/dev/null || echo "NA"
-        echo '```'
-        echo
-        WARN=\$(grep -i "warn" "\$CALCUTS" 2>/dev/null | head -3 || true)
-        if [ -n "\$WARN" ]; then
-          echo "> **Warning:** \$WARN"
-          echo
-        fi
-        echo "> **Interpretation:** \$(purge_interp)"
-        # Pre-purge comparison: RagTag on the Medaka assembly (no purge_dups).
-        if [ -n "\$GFRAC_MEDAKA_SCAF" ] && [ "\$GFRAC_MEDAKA_SCAF" != "0" ]; then
-          echo
-          echo "> **Pre-purge comparison:** scaffolding the Medaka assembly *without* purge_dups (the medaka_scaf column) retains genome fraction \${GFRAC_MEDAKA_SCAF}% vs \${GFRAC_SCAFFOLD}% after purge_dups. A large gap means purge_dups discarded unique sequence (over-purging) rather than haplotigs -- consider running with --skip_purge."
-        fi
       fi
+      echo "> **Interpretation:** \$(purge_interp)"
+      echo
+      echo "| Candidate (scaffolded) | Genome fraction | BUSCO complete | BUSCO duplicated |"
+      echo "|---|---|---|---|"
+      echo "| Medaka (unpurged) | \${GFRAC_MEDAKA_SCAF}% | \${BUSCO_C_MEDAKA}% | \${BUSCO_D_MEDAKA}% |"
+      echo "| purge_dups        | \${GFRAC_PURGE_SCAF}% | \${BUSCO_C_PURGE}% | \${BUSCO_D_PURGE}% |"
+      echo
+      echo "> **How to read this:** a large genome-fraction gap with little reduction in BUSCO"
+      echo "> duplication means purge_dups discarded unique sequence (over-purging) rather than"
+      echo "> haplotigs. Medaka is the default final; pass --final_assembly purge to adopt the purged genome."
       echo
 
       # ── 4. Scaffolding ────────────────────────────────────────────────────
@@ -308,11 +334,11 @@ process FINAL_SUMMARY {
       echo
       echo "The **${sample}** nuclear genome assembly is of **\${QUALITY_TIER} overall quality** based on BUSCO completeness (\${BUSCO_C}%), scaffold N50 (\${N50_SCAFFOLD} bp), and reference genome fraction (\${GFRAC_SCAFFOLD}%)."
       echo
-      if [ "\$SKIP_PURGE" -gt 0 ]; then
-        HAPLO_SENTENCE="**Haplotig removal:** Purge_dups was skipped (--skip_purge true) -- no haplotigs removed."
+      PURGE_MB=\$(echo \$LEN_PURGE | awk '{printf "%.0f Mb", \$1/1e6}')
+      if [ "${final_asm}" = "purge" ]; then
+        HAPLO_SENTENCE="**Haplotig removal:** Purge_dups removed \${PURGE_REMOVED}% of the assembly (autotune peak: \${PEAK}x), retaining \${PURGE_MB}; the purged genome was adopted as final."
       else
-        PURGE_MB=\$(echo \$LEN_PURGE | awk '{printf "%.0f Mb", \$1/1e6}')
-        HAPLO_SENTENCE="**Haplotig removal:** Purge_dups removed \${PURGE_REMOVED}% of the assembly (autotune peak: \${PEAK}x), retaining \${PURGE_MB} of primary sequence."
+        HAPLO_SENTENCE="**Haplotig removal:** Purge_dups ran (would remove \${PURGE_REMOVED}%, autotune peak \${PEAK}x) but the Medaka (unpurged) genome was adopted as final -- see the section 3 comparison."
       fi
       echo "**Sequencing:** \$COVERAGE ONT reads at mean quality Q\${MEAN_QUAL} (read N50 \${READ_N50} bp). **Assembly:** Flye produced \$NCONTIGS_FLYE contigs totalling \$(echo \$LEN_FLYE | awk '{printf "%.0f Mb", \$1/1e6}') from a \$(echo \$TOTAL_BASES | awk '{printf "%.1f Gb", \$1/1e9}') read set. **Polishing:** Medaka corrected base-level errors without structural changes. \${HAPLO_SENTENCE} **Scaffolding:** RagTag anchored \${PLACED_PCT}% of assembled bases to chromosomal positions using the reference, raising scaffold N50 to \$(echo \$N50_SCAFFOLD | awk '{printf "%.1f Mb", \$1/1e6}'). **Gene space:** BUSCO completeness \${BUSCO_C}% (${busco_lin}), with \${BUSCO_D}% duplication and \${BUSCO_M}% missing genes."
       echo
@@ -332,7 +358,9 @@ process FINAL_SUMMARY {
           if (rec != "")
               printf "**Suggestions:**\\n\\n%s\\n", rec
       }'
-      echo "_No contamination screening was performed. For publishable assemblies, consider running BlobTools or Kraken2 on the final scaffold FASTA._"
+      ${screened
+        ? 'echo "_Contamination screening: Kraken2 + BlobTools were run on the final assembly; see qc/kraken2/ and qc/blobtools/ (interpret the blob plot — fragmented plant contigs can spuriously hit human in PlusPF)._"'
+        : 'echo "_No contamination screening was performed. Enable --run_kraken2 / --run_blobtools to screen the final assembly._"'}
     } > ${sample}_assembly_summary.md
     """
 }
@@ -421,7 +449,7 @@ chemistry and basecaller used; set via --medaka_model.
 
 ---
 
-## Haplotig removal (--skip_purge to bypass)
+## Haplotig removal (always runs; --final_assembly selects the final genome)
 
 ### purge_dups
 Removes redundant haplotig contigs from diploid assemblies. In a heterozygous organism, Flye
@@ -437,8 +465,18 @@ contigs by two criteria:
 
 The pipeline uses autotune mode by default: the haploid coverage peak is detected from the
 depth distribution (PB.stat) and thresholds are set automatically. Use --calcuts_args to
-override, or --skip_purge to bypass this step entirely and pass Medaka output directly to
-scaffolding.
+override the cutoffs.
+
+purge_dups ALWAYS runs, but it is a data-dependent judgment call (autotune can over-purge at
+low/uneven coverage, discarding unique sequence rather than haplotigs). The pipeline therefore
+scaffolds and BUSCOs BOTH the Medaka (unpurged) and purged genomes for side-by-side comparison
+in the QUAST table and the assembly summary, and --final_assembly selects which one becomes the
+published final assembly (gets the contaminant screen + FINAL_SUMMARY):
+
+- --final_assembly medaka (DEFAULT): the unpurged Medaka genome is the final.
+- --final_assembly purge: the purge_dups genome is the final.
+
+(The legacy --skip_purge flag is retired; pipeline errors with the --final_assembly equivalent.)
 
 ### HapDup (--run_hapdup)
 Phases the purged primary assembly into haplotype-resolved contigs using long-read signal.
@@ -487,20 +525,60 @@ in the same batch.
 
 ---
 
-## Optional BAM-level QC
+## Optional BAM-level QC (final genome only)
+
+These run only on the published final assembly (selected by --final_assembly), using a single
+read-to-assembly BAM.
 
 ### Qualimap bamqc (--run_qualimap)
-Generates per-base coverage statistics, GC bias plots, and insert-size distributions from
-the read-to-assembly BAM. Run at both the purge_dups and scaffold stages to compare coverage
-uniformity before and after scaffolding. Results are integrated into the MultiQC report
-automatically via native Qualimap support.
+Generates per-base coverage statistics, GC bias plots, and insert-size distributions from the
+read-to-assembly BAM. Results are integrated into the MultiQC report automatically via native
+Qualimap support.
 
-### BlobTools (--run_blobtools)
-Generates GC-vs-coverage blob plots from the read-to-assembly BAM and assembly FASTA.
-Coverage-only mode (no taxonomy database required) visualises whether all contigs cluster at
-the expected sequencing depth and GC content. Unexpected clusters may indicate contamination
-or organelle sequence carry-over into the nuclear assembly. Results are published as PNG plots
-and TSV tables in the output directory.
+### BlobTools (--run_blobtools / --run_kraken2)
+Generates GC-vs-coverage blob plots from the read-to-assembly BAM and assembly FASTA. In
+coverage-only mode (--run_blobtools, no taxonomy DB) it visualises whether all contigs cluster
+at the expected depth and GC content. With --run_kraken2 it additionally renders a
+taxonomy-coloured blob plot from the Kraken2 per-contig hits + the NCBI taxdump, so
+non-Viridiplantae contigs (candidate contamination) stand out by phylum. Results are published
+as PNG plots and TSV tables in the output directory.
+
+### Kraken2 (--run_kraken2)
+Classifies each assembled contig of the final genome against the PlusPF reference database
+(see Reference databases), assigning an NCBI taxon per contig. The per-contig taxids are written
+as a BlobTools "hits" file that colours the blob plot above. Caveat for plant assemblies: PlusPF
+contains no plants, so genuine host (sorghum) contigs are reported as unclassified / no-hit, and
+fragmented contigs can spuriously match the human genome at the default (zero) confidence
+threshold -- judge real contaminants on the blob plot, where they separate from the host cloud
+by GC and coverage.
+
+---
+
+## Reference databases
+
+### Kraken2 PlusPF (--kraken2_db)
+Prebuilt Kraken2 database (~104 GB hash) covering bacteria, archaea, viral, human, protozoa,
+fungi, plasmid and UniVec. Small enough to load fully into RAM (run without --memory-mapping),
+so classification is fast. PlusPF ships its own nodes.dmp/names.dmp, reused as the BlobTools
+taxdump (--taxdump_dir) so classifier and taxonomy share one vintage. Contains no plant genomes
+by design -- the host is recognised by absence (no-hit). Source: genome-idx (Langmead prebuilt
+indexes). The larger NCBI "reference" DB (~456 GB) is deliberately not used: it exceeds node RAM,
+forcing --memory-mapping whose per-k-mer random reads over the shared filesystem never finished.
+
+### OatkDB (--organelle_assembler oatk)
+HMM profile database of organelle genes for OATK. A sorghum-specific DB is built from the
+provided cp/mt reference FASTAs when available; otherwise the generic embryophyta (land-plant)
+OatkDB is downloaded.
+
+### Reference genomes (--cp_ref / --mt_ref / --nuclear_ref)
+Sorghum bicolor references: chloroplast NC_008602, mitochondrion NC_008360, and nuclear
+Sbicolor_730_v5.0. Used for organelle read/contig separation (minimap2 + FILTER_ORGANELLE_CONTIGS),
+RagTag scaffolding, and QUAST genome-fraction. A related genome suffices -- exact species match
+is not required.
+
+### BUSCO lineage (--busco_lineage)
+Lineage-specific near-universal single-copy ortholog set (default poales_odb10) used to score
+the gene-space completeness of each candidate assembly.
 
 ---
 
@@ -524,6 +602,7 @@ Citations for each tool, in order of appearance, with project homepages.
 - **MultiQC** -- Ewels P, et al. MultiQC: summarize analysis results for multiple tools and samples in a single report. Bioinformatics. 2016;32(19):3047-3048. <https://multiqc.info>
 - **Qualimap** -- Okonechnikov K, et al. Qualimap 2: advanced multi-sample quality control for high-throughput sequencing data. Bioinformatics. 2016;32(2):292-294. <http://qualimap.conf.es>
 - **BlobTools** -- Laetsch DR, Blaxter ML. BlobTools: Interrogation of genome assemblies. F1000Research. 2017;6:1287. <https://github.com/DRL/blobtools>
+- **Kraken2** -- Wood DE, Lu J, Langmead B. Improved metagenomic analysis with Kraken 2. Genome Biol. 2019;20:257. <https://github.com/DerrickWood/kraken2> (PlusPF prebuilt DB: <https://benlangmead.github.io/aws-indexes/k2>)
 TOOLSEOF
     """
 }
