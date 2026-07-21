@@ -50,23 +50,25 @@ process FILTER_READS {
 }
 
 process BUSCO_NUCLEAR {
-    tag        { sample_id }
+    tag        { "${sample_id}_${stage}" }
     label      'qc_heavy'
-    publishDir { "${params.outdir}/qc/busco/${sample_id}" }, mode: 'copy'
+    publishDir { "${params.outdir}/qc/busco/${sample_id}_${stage}" }, mode: 'copy'
     container  'quay.io/biocontainers/busco:5.8.0--pyhdfd78af_0'
 
     input:
-    tuple val(sample_id), path(assembly)
+    // stage ('medaka'|'purge') disambiguates the two candidate genomes BUSCO runs on so
+    // their output dirs do not collide under qc/busco/.
+    tuple val(sample_id), val(stage), path(assembly)
 
     output:
-    tuple val(sample_id), path("busco_${sample_id}/*"),                  emit: full
-    tuple val(sample_id), path("busco_${sample_id}/short_summary*.txt"), emit: summary
+    tuple val(sample_id), val(stage), path("busco_${sample_id}_${stage}/*"),                  emit: full
+    tuple val(sample_id), val(stage), path("busco_${sample_id}_${stage}/short_summary*.txt"), emit: summary
 
     script:
     """
     busco \\
         --in ${assembly} \\
-        --out busco_${sample_id} \\
+        --out busco_${sample_id}_${stage} \\
         --mode genome \\
         --lineage_dataset ${params.busco_lineage} \\
         --cpu ${task.cpus}
@@ -124,30 +126,37 @@ process QUAST_NUCLEAR {
     container 'quay.io/biocontainers/quast:5.3.0--py39pl5321h746d604_1'
 
     input:
-    // Four named assembly paths avoid the list-of-paths staging ambiguity.
-    // When no scaffold exists, asm_scaffold receives purge_dups again and is excluded
-    // from the QUAST command via has_scaffold=false.
+    // Named assembly paths avoid the list-of-paths staging ambiguity. Unused slots
+    // (e.g. asm_medaka_scaffold / asm_scaffold when absent) receive a passthrough
+    // and are excluded from the QUAST command via the has_* flags.
     tuple val(sample_id),
-          path(asm_flye,     stageAs: 'asm_flye.fasta'),
-          path(asm_medaka,   stageAs: 'asm_medaka.fasta'),
-          path(asm_purge,    stageAs: 'asm_purge.fasta'),
-          path(asm_scaffold, stageAs: 'asm_scaffold.fasta')
-    val  has_scaffold   // true → include scaffold + reference as 5th assembly
-    path reference      // pass [] when no nuclear_ref
-    val  skip_purge     // true → purge column is medaka passthrough; adjust label
+          path(asm_flye,            stageAs: 'asm_flye.fasta'),
+          path(asm_medaka,          stageAs: 'asm_medaka.fasta'),
+          path(asm_medaka_scaffold, stageAs: 'asm_medaka_scaffold.fasta'),
+          path(asm_purge,           stageAs: 'asm_purge.fasta'),
+          path(asm_scaffold,        stageAs: 'asm_scaffold.fasta')
+    val  has_scaffold          // true → include scaffold + reference
+    val  has_medaka_scaffold   // true → also include the pre-purge (Medaka) RagTag scaffold
+    path reference             // pass [] when no nuclear_ref
 
     output:
     tuple val(sample_id), path("quast_${sample_id}_nuclear"),              emit: report
     tuple val(sample_id), path("quast_${sample_id}_nuclear/report.tsv"),   emit: mqc
 
     script:
-    def ref_arg     = reference    ? "--reference ${reference}" : ""
-    def ref_asm     = reference    ? " ${reference}" : ""
-    def purge_label = skip_purge   ? "medaka_nopurge" : "purge_dups"
-    def label_str   = has_scaffold ? "flye,medaka,${purge_label},scaffold,reference"
-                                   : "flye,medaka,${purge_label}"
-    def asm_str     = has_scaffold ? "asm_flye.fasta asm_medaka.fasta asm_purge.fasta asm_scaffold.fasta"
-                                   : "asm_flye.fasta asm_medaka.fasta asm_purge.fasta"
+    def ref_arg     = reference  ? "--reference ${reference}" : ""
+    def ref_asm     = reference  ? " ${reference}" : ""
+    def purge_label = "purge_dups"   // purge_dups always runs now
+    // Build the column list in order: flye, medaka, [medaka_scaf], purge, [scaffold], [reference].
+    // "medaka_scaf" deliberately omits the substring "scaffold" so the report's
+    // qval "scaffold" lookup still resolves to the canonical purge-stage scaffold.
+    def labels = ['flye', 'medaka']
+    def asms   = ['asm_flye.fasta', 'asm_medaka.fasta']
+    if (has_medaka_scaffold) { labels << 'medaka_scaf'; asms << 'asm_medaka_scaffold.fasta' }
+    labels << purge_label;     asms << 'asm_purge.fasta'
+    if (has_scaffold)        { labels << 'scaffold';    asms << 'asm_scaffold.fasta' }
+    def label_str = labels.join(',') + (has_scaffold ? ',reference' : '')
+    def asm_str   = asms.join(' ')
     """
     quast.py \\
         ${ref_arg} \\

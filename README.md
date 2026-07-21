@@ -1,18 +1,18 @@
 # nf-broom 
 
 <!-- badges: start -->
-[![Visits](https://img.shields.io/badge/visits-count-blue)](https://github.com/OWNER/REPO)
-[![Latest Release](https://img.shields.io/github/v/release/OWNER/REPO)](https://github.com/OWNER/REPO/releases)
-[![Total Downloads](https://img.shields.io/github/downloads/OWNER/REPO/total)](https://github.com/OWNER/REPO/releases)
-[![Open Issues](https://img.shields.io/github/issues/OWNER/REPO)](https://github.com/OWNER/REPO/issues)
+[![Visits](https://visitor-badge.laobi.icu/badge?page_id=Gian77.nf-broom)](https://github.com/Gian77/nf-broom)
+[![Latest Release](https://img.shields.io/github/v/release/Gian77/nf-broom?include_prereleases)](https://github.com/Gian77/nf-broom/releases)
+[![Total Downloads](https://img.shields.io/github/downloads/Gian77/nf-broom/total)](https://github.com/Gian77/nf-broom/releases)
+[![Open Issues](https://img.shields.io/github/issues/Gian77/nf-broom)](https://github.com/Gian77/nf-broom/issues)
 <!-- badges: end -->
 
-## a nextflow pipeline for plnt genome assembly
+## a nextflow pipeline for plant genome assembly
 
-`nf-broom` is a [nextflow](https://www.nextflow.io/) pipeline for plnt genome assembly. 
+`nf-broom` is a [nextflow](https://www.nextflow.io/) pipeline for plant genome assembly. 
 This pipeline is currently under development. At the moment this is ONT-only de novo 
 assembly developed for sorghum genomes with explicit organelle separation. The name 
-**nf-broom** comes from an older common name for sorhgum i.e. broom, as it was used to 
+**nf-broom** comes from an older common name for sorghum, i.e. broom, as it was used to 
 make brooms.
 
 ## What nf-broom does (for now)
@@ -23,24 +23,45 @@ For each sample:
 2. **Filter** — filtlong (min length 1 kb, min mean quality 80)
 3. **Map to organelles** — minimap2 against combined cp + mt reference
 4. **Partition reads** — split into chloroplast / mitochondrial / nuclear sets
-5. **Assemble** — Flye for each compartment
-6. **Polish nuclear** — Medaka
-7. **Purge duplicates** — purge_dups removes haplotigs
-8. **Phase (optional)** — HapDup for diploid output (off by default)
-9. **BUSCO** — completeness check on final nuclear assembly
-10. **MultiQC** — aggregated report
+5. **Assemble organelles** — Flye per compartment (default), or Oatk HMM-based read
+   detection on all filtered reads (`--organelle_assembler oatk`)
+6. **Filter organelle contigs** — reference-based filter removes nuclear-inserted
+   organelle sequence (NUPTs/NUMTs)
+7. **Assemble nuclear genome** — Flye
+8. **Polish nuclear** — Medaka
+9. **Purge duplicates** — purge_dups always runs; both the purged and unpurged
+   (Medaka) genomes are carried forward for comparison
+10. **Phase (optional)** — HapDup for diploid output (`--run_hapdup`, off by default)
+11. **Scaffold (optional)** — RagTag correct + scaffold against `--nuclear_ref`, run on
+    both candidate genomes
+12. **Compare & select final** — QUAST + BUSCO score both candidates side-by-side (this
+    exposes purge_dups over-purging); `--final_assembly medaka|purge` (default `medaka`)
+    picks which one is published as the final genome
+13. **Contaminant screening (optional)** — Kraken2 classification + BlobTools
+    coverage/taxonomy blob plots on the final genome (`--run_kraken2`, `--run_blobtools`,
+    `--run_qualimap`)
+14. **Reports** — MultiQC aggregation, a human-readable per-sample assembly summary
+    (`FINAL_SUMMARY`, requires `--nuclear_ref`), and a tool-citations report
 
 ## Directory structure expected
 
 ```
-sorghum-assembly/
+nf-broom/
 ├── main.nf
 ├── nextflow.config
 ├── modules/
-│   ├── qc.nf
-│   ├── mapping.nf
-│   ├── assembly.nf
-│   └── polishing.nf
+│   ├── qc.nf              # NanoPlot, filtering, QUAST, BUSCO, Qualimap, MultiQC
+│   ├── mapping.nf          # organelle alignment, read partitioning
+│   ├── dbs.nf              # OatkDB fetch (organelle HMM databases)
+│   ├── assembly.nf         # Flye / Oatk organelle + nuclear assembly
+│   ├── polishing.nf        # Medaka, purge_dups, HapDup
+│   ├── scaffolding.nf      # RagTag correct + scaffold
+│   ├── contamination.nf    # Kraken2 + BlobTools taxonomy screening
+│   └── reports.nf          # FINAL_SUMMARY + TOOLS_REPORT
+├── helper-functions/
+│   └── quay_tools.sh       # quay.io biocontainer image lookup/verification helpers
+├── refs/                        <-- you provide
+│   └── sorghum/*.fasta
 └── reads/                       <-- you provide
     ├── sample_A/
     │   └── *.fastq.gz
@@ -51,9 +72,11 @@ sorghum-assembly/
 
 ## Running
 
-### Local test (small data, validate the wiring)
+### Local test (validate the wiring, no compute)
 
-This may fail depending on how big your subsetted data is. For example, if too small it is hard to assemble the genome and all the coverage parameters will be off.
+To check the pipeline wires up correctly (channels, params, DAG) without running any process
+or needing real coverage, use `-preview` (see Sanity checks below). For an actual assembly run
+on a small dataset, use a real full sample rather than a subsample — see Test run below for why.
 
 ```bash
 nextflow run main.nf \
@@ -82,27 +105,41 @@ Add `--run_hapdup` to either command above.
 
 ## Key parameters
 
-| Parameter         | Default                                | Notes                                          |
-|------------------|----------------------------------------|------------------------------------------------|
-| `--reads`         | `./reads`                              | Dir containing `<sample_id>/*.fastq.gz`        |
-| `--cp_ref`        | (required)                             | Chloroplast reference FASTA                    |
-| `--mt_ref`        | (required)                             | Mitochondrion reference FASTA                  |
-| `--genome_size`   | `720m`                                 | Estimated nuclear genome size for Flye         |
-| `--medaka_model`  | `r1041_e82_400bps_sup_v5.0.0`          | Match your basecaller + chemistry              |
-| `--busco_lineage` | `poales_odb10`                         | Plant lineage; downloaded auto by BUSCO        |
-| `--run_hapdup`    | `false`                                | Enable for diploid phasing                     |
-| `--outdir`        | `results`                              | Output directory                               |
+| Parameter               | Default                                | Notes                                                          |
+|------------------------|-----------------------------------------|-----------------------------------------------------------------|
+| `--reads`               | `./reads`                              | Dir containing `<sample_id>/*.fastq.gz`                        |
+| `--cp_ref`              | (required)                             | Chloroplast reference FASTA                                    |
+| `--mt_ref`              | (required)                             | Mitochondrion reference FASTA                                  |
+| `--nuclear_ref`         | none                                    | Nuclear reference FASTA; enables RagTag scaffolding, QUAST genome-fraction, and `FINAL_SUMMARY` |
+| `--organelle_assembler` | `flye`                                 | `flye` (per-compartment) or `oatk` (HMM-based read detection)  |
+| `--genome_size`         | `720m`                                 | Estimated nuclear genome size for Flye                         |
+| `--medaka_model`        | `r1041_e82_400bps_sup_v5.0.0`          | Match your basecaller + chemistry                               |
+| `--busco_lineage`       | `poales_odb10`                         | Plant lineage; downloaded auto by BUSCO                        |
+| `--run_hapdup`          | `false`                                | Enable for diploid phasing                                     |
+| `--calcuts_args`        | `""` (autotune)                        | Manual purge_dups cutoffs, e.g. `"-l 5 -m 22 -u 120"`           |
+| `--final_assembly`      | `medaka`                               | `medaka` (unpurged) or `purge` — selects the published final nuclear genome; purge_dups always runs and both are compared |
+| `--run_qualimap`        | `false`                                | BAM-level coverage QC on the final genome                      |
+| `--run_blobtools`       | `false`                                | Coverage-vs-GC blob plot on the final genome                   |
+| `--run_kraken2`         | `false`                                | Taxonomic contaminant screening on the final genome (needs `--kraken2_db` / `--taxdump_dir`) |
+| `--kraken2_db`          | PlusPF DB path                         | Kraken2 database; small enough to load fully into RAM          |
+| `--taxdump_dir`         | PlusPF DB path                         | NCBI taxdump (nodes.dmp/names.dmp) BlobTools uses to resolve Kraken2 taxids |
+| `--outdir`              | `results`                              | Output directory                                                |
+
+> `--skip_purge` is retired — purge_dups always runs now; use `--final_assembly medaka` (equivalent to the old skip behavior) or `--final_assembly purge`.
 
 ## Resource classes (configured in nextflow.config)
 
-| Label             | CPUs | RAM     | Time  | Used by                              |
-|-------------------|------|---------|-------|--------------------------------------|
-| `qc`              | 4    | 8 GB    | 2h    | NanoPlot, filtlong, MultiQC          |
-| `qc_heavy`        | 16   | 32 GB   | 12h   | BUSCO                                |
-| `map`             | 16   | 32 GB   | 6h    | minimap2 + samtools                  |
-| `assemble_small`  | 8    | 16 GB   | 4h    | Flye on cp / mt                      |
-| `assemble_heavy`  | 32   | 256 GB  | 72h   | Flye nuclear, HapDup                 |
-| `polish`          | 16   | 64 GB   | 24h   | Medaka, purge_dups                   |
+| Label             | CPUs | RAM     | Time   | Used by                                         |
+|-------------------|------|---------|--------|--------------------------------------------------|
+| `qc`              | 16   | 128 GB  | 12h    | NanoPlot, filtlong, MultiQC                      |
+| `qc_heavy`        | 16   | 128 GB  | 24h    | BUSCO, QUAST, Qualimap, BlobTools, Kraken2       |
+| `map`             | 24   | 128 GB  | 12h    | minimap2 + samtools                              |
+| `assemble_small`  | 16   | 128 GB  | 6h     | Flye on cp / mt                                  |
+| `assemble_heavy`  | 32   | 448 GB  | 120h   | Flye nuclear, HapDup                             |
+| `polish`          | 24   | 256 GB  | 48h    | Medaka, purge_dups                               |
+
+`KRAKEN2_CLASSIFY` overrides `qc_heavy` to 160 GB (`withName` in nextflow.config) so the
+104 GB PlusPF database loads fully into RAM instead of relying on `--memory-mapping`.
 
 Adjust to your cluster's queue limits and node capacity.
 
@@ -115,7 +152,6 @@ Adjust to your cluster's queue limits and node capacity.
 
 ## What's NOT yet included (Phase 3+)
 
-- Scaffolding against BTx623 (RagTag / YaHS)
 - Merqury QV estimation
 - Organelle annotation (GeSeq / PGA)
 - Illumina polishing (Pilon)
@@ -134,21 +170,26 @@ nextflow run main.nf -preview --cp_ref ... --mt_ref ...
 nextflow run main.nf -profile condor --reads ./reads_single_sample ...
 ```
 
-## Use the `test_channel.nf` to test
-```bash
-nextflow run test_channel.nf --reads reads/
-```
-
 ## Test run
-# Pick one sample, subsample to ~100,000 reads (again, this may fail becasue to small of a subset)
+
+**Do not test with a random read subsample** (e.g. `seqkit sample -n 50000 ...`). De novo
+assembly needs real depth across the whole genome — Flye/purge_dups/scaffolding all expect
+20-30x+ coverage, and a random subsample of a few thousand-to-tens-of-thousands of reads sits
+far below that. It doesn't just make the assembly worse, it typically fails to assemble at all
+or produces a wildly fragmented result that tells you nothing about whether the pipeline itself
+is wired correctly.
+
+To validate the pipeline wiring without spending compute, use `-preview` (see Sanity checks
+above) — it builds the DAG and checks channel wiring without executing any process.
+
+To actually test assembly quality on a fast, cheap run, use a **real but small whole sample**
+(a lower-depth or smaller-genome sample if you have one) rather than a subsample of a large one
+— e.g. the `B11077_test/` / `F10702_test/` wrapper-dir pattern used elsewhere in this README,
+which point at full per-sample read sets:
 
 ```
-mkdir -p reads_test/test_sample
-seqkit sample -n 50000 reads/genotype_1/*.fastq.gz -o reads_test/test_sample/test.fastq.gz
-
-# Run
 nextflow run main.nf \
-    --reads $PWD/reads_test \
+    --reads $PWD/B11077_test/ \
     -profile condor \
     --cp_ref refs/sorghum/sorghum_cp_NC008602.fasta \
     --mt_ref refs/sorghum/sorghum_mt_NC008360.fasta \
@@ -190,15 +231,19 @@ container 'quay.io/biocontainers/flye:2.9.6--py313h7fbb527_1'
 
 #### Alternative option
 
-Source the `quay_tools.sh` in `helper_functions/` to search throuhg the quay, verify an image exist and is pullable, and test a command for the tool you are looking into using. Remember, this works for images that have one single tool. If you need/want more tool in one image you need to rely on the mulled images, see above. 
+`helper-functions/quay_tools.sh` ships in this repo (copied from the maintainer's personal
+`~/helper-functions/`, kept in sync manually) so it's available to anyone who clones nf-broom.
+Source it to search through quay.io, verify an image exists and is pullable, and test a command
+for the tool you're looking into using. This works for images that have a single tool. If you
+need/want more than one tool in an image, use the mulled images instead — see above.
 
-To use the script, you need to have a conda nextflow environment with `apptainer` installed.
+To use the script, you need a conda nextflow environment with `apptainer` installed.
 
-For example:
+For example, from the repo root:
 ```
-[benucci@scarcity-ap-1 ~]$ source helper-functions/quay_tools.sh 
-[benucci@scarcity-ap-1 ~]$ conda activate nextflow
-(nextflow) [benucci@scarcity-ap-1 ~]$ quay_tags flye
+[benucci@scarcity-ap-1 nf-broom]$ source helper-functions/quay_tools.sh
+[benucci@scarcity-ap-1 nf-broom]$ conda activate nextflow
+(nextflow) [benucci@scarcity-ap-1 nf-broom]$ quay_tags flye
 quay.io/biocontainers/flye:2.9.6--py313h7fbb527_1
 quay.io/biocontainers/flye:2.9.6--py312h734f728_1
 quay.io/biocontainers/flye:2.9.6--py311h93bbee8_1
@@ -211,11 +256,11 @@ quay.io/biocontainers/flye:2.9.5--py39h475c85d_2
 quay.io/biocontainers/flye:2.9.5--py312h5e9d817_2
 ...
 
-(nextflow) [benucci@scarcity-ap-1 ~]$ verify_image quay.io/biocontainers/flye:2.9.6--py313h7fbb527_1
+(nextflow) [benucci@scarcity-ap-1 nf-broom]$ verify_image quay.io/biocontainers/flye:2.9.6--py313h7fbb527_1
 [OK pull] quay.io/biocontainers/flye:2.9.6--py313h7fbb527_1  (no command check)
-(nextflow) [benucci@scarcity-ap-1 ~]$ verify_image quay.io/biocontainers/flye:2.9.6--py313h7fbb527_1 "flye --version"
+(nextflow) [benucci@scarcity-ap-1 nf-broom]$ verify_image quay.io/biocontainers/flye:2.9.6--py313h7fbb527_1 "flye --version"
 [OK] quay.io/biocontainers/flye:2.9.6--py313h7fbb527_1  (flye --version works)
-(nextflow) [benucci@scarcity-ap-1 ~]$ 
+(nextflow) [benucci@scarcity-ap-1 nf-broom]$
 ```
 
 # Test the pipeline

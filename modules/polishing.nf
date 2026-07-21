@@ -86,24 +86,6 @@ process PURGE_DUPS {
     """
 }
 
-
-process SKIP_PURGE_MARKER {
-    tag { sample_id }
-
-    input:
-    tuple val(sample_id), path(assembly)
-
-    output:
-    tuple val(sample_id), path("cutoffs"),     emit: cutoffs
-    tuple val(sample_id), path("calcuts.log"), emit: calcuts_log
-
-    script:
-    """
-    printf "0\\t0\\t0\\t0\\t0\\t0\\n" > cutoffs
-    echo "[skip_purge] Purge_dups skipped (--skip_purge true)" > calcuts.log
-    """
-}
-
 process ALIGN_FOR_HAPDUP {
     tag       { sample_id }
     label     'map'
