@@ -58,6 +58,8 @@ nf-broom/
 │   ├── scaffolding.nf      # RagTag correct + scaffold
 │   ├── contamination.nf    # Kraken2 + BlobTools taxonomy screening
 │   └── reports.nf          # FINAL_SUMMARY + TOOLS_REPORT
+├── helper-functions/
+│   └── quay_tools.sh       # quay.io biocontainer image lookup/verification helpers
 ├── refs/                        <-- you provide
 │   └── sorghum/*.fasta
 └── reads/                       <-- you provide
@@ -229,15 +231,19 @@ container 'quay.io/biocontainers/flye:2.9.6--py313h7fbb527_1'
 
 #### Alternative option
 
-Source the `quay_tools.sh` in `helper_functions/` to search throuhg the quay, verify an image exist and is pullable, and test a command for the tool you are looking into using. Remember, this works for images that have one single tool. If you need/want more tool in one image you need to rely on the mulled images, see above. 
+`helper-functions/quay_tools.sh` ships in this repo (copied from the maintainer's personal
+`~/helper-functions/`, kept in sync manually) so it's available to anyone who clones nf-broom.
+Source it to search through quay.io, verify an image exists and is pullable, and test a command
+for the tool you're looking into using. This works for images that have a single tool. If you
+need/want more than one tool in an image, use the mulled images instead — see above.
 
-To use the script, you need to have a conda nextflow environment with `apptainer` installed.
+To use the script, you need a conda nextflow environment with `apptainer` installed.
 
-For example:
+For example, from the repo root:
 ```
-[benucci@scarcity-ap-1 ~]$ source helper-functions/quay_tools.sh 
-[benucci@scarcity-ap-1 ~]$ conda activate nextflow
-(nextflow) [benucci@scarcity-ap-1 ~]$ quay_tags flye
+[benucci@scarcity-ap-1 nf-broom]$ source helper-functions/quay_tools.sh
+[benucci@scarcity-ap-1 nf-broom]$ conda activate nextflow
+(nextflow) [benucci@scarcity-ap-1 nf-broom]$ quay_tags flye
 quay.io/biocontainers/flye:2.9.6--py313h7fbb527_1
 quay.io/biocontainers/flye:2.9.6--py312h734f728_1
 quay.io/biocontainers/flye:2.9.6--py311h93bbee8_1
@@ -250,11 +256,11 @@ quay.io/biocontainers/flye:2.9.5--py39h475c85d_2
 quay.io/biocontainers/flye:2.9.5--py312h5e9d817_2
 ...
 
-(nextflow) [benucci@scarcity-ap-1 ~]$ verify_image quay.io/biocontainers/flye:2.9.6--py313h7fbb527_1
+(nextflow) [benucci@scarcity-ap-1 nf-broom]$ verify_image quay.io/biocontainers/flye:2.9.6--py313h7fbb527_1
 [OK pull] quay.io/biocontainers/flye:2.9.6--py313h7fbb527_1  (no command check)
-(nextflow) [benucci@scarcity-ap-1 ~]$ verify_image quay.io/biocontainers/flye:2.9.6--py313h7fbb527_1 "flye --version"
+(nextflow) [benucci@scarcity-ap-1 nf-broom]$ verify_image quay.io/biocontainers/flye:2.9.6--py313h7fbb527_1 "flye --version"
 [OK] quay.io/biocontainers/flye:2.9.6--py313h7fbb527_1  (flye --version works)
-(nextflow) [benucci@scarcity-ap-1 ~]$ 
+(nextflow) [benucci@scarcity-ap-1 nf-broom]$
 ```
 
 # Test the pipeline
