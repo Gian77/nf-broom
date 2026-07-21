@@ -88,6 +88,49 @@ nextflow run main.nf \
 
 ### HTCondor (production)
 
+`-profile condor` makes every process a Condor job regardless of how you launch Nextflow
+itself. On top of that, this repo ships two wrapper scripts for launching the Nextflow *head*
+process on the submit node (`scarcity-ap-1`) — pick one depending on whether you want Condor
+supervising the head process or not:
+
+**`condor_submit pipeline.condor`** (recommended) — submits `run_pipeline_condor.sh` as a
+`universe = local` Condor job. Condor owns the head process's lifecycle: it stays in the queue
+for the life of the run, is held (not silently dropped) if it exits non-zero
+(`on_exit_hold`), and its logs land in `condor_logs/pipeline.condor.{out,err,log}`. This is what
+ran the validated F10702 production run. Resume behavior and the final-assembly choice are
+env-var overridable:
+
+```bash
+# Defaults to -resume (latest session) and --final_assembly medaka
+condor_submit pipeline.condor
+
+# Pin a specific session (see .nextflow/history) instead of the latest
+RESUME_SESSION=fe6fce60-2702-4d0f-aba2-700f03279aeb condor_submit pipeline.condor
+
+# Publish the purged genome instead of the default Medaka one
+FINAL_ASSEMBLY=purge condor_submit pipeline.condor
+
+condor_q                # watch the job
+condor_rm <cluster_id>  # stop it
+```
+
+**`bash run_pipeline.sh`** — a plain `nohup` launcher you run directly (e.g. inside `tmux`, see
+Interactive sessions below) instead of submitting it as a Condor job itself; per-process
+scheduling still goes through Condor via `-profile condor`, only the head process is unsupervised.
+Simpler to inspect/kill by hand (PID + stdout/stderr recorded under `condor_logs/`), but Condor
+won't notice or hold on a failure the way `pipeline.condor` does:
+
+```bash
+FINAL_ASSEMBLY=purge bash run_pipeline.sh   # FINAL_ASSEMBLY optional, defaults to medaka
+```
+
+Both scripts currently hardcode the F10702 sample paths/flags near the top — edit them directly
+(or generalize to arguments) for a different sample. To watch either run live with coloured
+task-level output instead of a raw `tail -f`, use `./watch_pipeline.sh [path/to/.nextflow.log]`
+(defaults to `.nextflow.log` in the current directory).
+
+For a one-off run against different data, the plain inline command works too:
+
 ```bash
 nextflow run main.nf \
     -profile condor \

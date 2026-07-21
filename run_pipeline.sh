@@ -24,6 +24,8 @@ nohup "${CONDA_ENV}/bin/nextflow" run "${PROJECT_DIR}/main.nf" \
     --organelle_assembler oatk \
     --run_qualimap \
     --run_blobtools \
+    --run_kraken2 \
+    --final_assembly ${FINAL_ASSEMBLY:-medaka} \
     -resume \
     > "${LOG_DIR}/pipeline.stdout.txt" \
     2> "${LOG_DIR}/pipeline.stderr.txt" &
